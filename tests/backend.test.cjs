@@ -87,12 +87,12 @@ test('directory quoting is safe for spaces, quotes, shell metacharacters and Uni
 });
 
 test('shell tokenization understands escaped spaces and incomplete quotes', () => {
-  assert.deepEqual(tokenize('cat "My Documents/re'), [
+  assert.deepEqual(tokenize('cat "My Documents/re', 'linux'), [
     { start: 0, end: 3, decoded: 'cat' }, { start: 4, end: 20, decoded: 'My Documents/re' },
   ]);
-  assert.equal(tokenize('cat My\\ Documents/report')[1].decoded, 'My Documents/report');
+  assert.equal(tokenize('cat My\\ Documents/report', 'linux')[1].decoded, 'My Documents/report');
   assert.equal(tokenize("Get-Content 'user''s file'", 'win32')[1].decoded, "user's file");
-  assert.equal(tokenize('cd ')[1].start, 3);
+  assert.equal(tokenize('cd ', 'linux')[1].start, 3);
 });
 
 test('completion replaces the whole last token, handles symlinks and filters cd files', async t => {

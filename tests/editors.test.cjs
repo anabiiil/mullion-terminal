@@ -196,7 +196,7 @@ test('native app icons are cached across directories, refreshed explicitly and n
   assert.deepEqual(requested, [verifiedTarget, verifiedTarget]);
 });
 
-test('Linux uses actual installed product icon assets before generic native file icons', async t => {
+test('Linux uses actual installed product icon assets before generic native file icons', { skip: process.platform === 'win32' }, async t => {
   const root = await temporary(t);
   const target = path.join(root, 'pycharm', 'bin', 'pycharm.sh');
   await file(target, true);
