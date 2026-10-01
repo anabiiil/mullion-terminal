@@ -1,0 +1,151 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.4). Must already exist."
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }} installer
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+          - os: ubuntu-latest
+            platform: linux
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Check out ${{ env.TAG }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies and rebuild native modules
+        run: npm ci
+
+      - name: Build app bundle
+        run: npm run build
+
+      - name: Package ${{ matrix.platform }} installer
+        run: npx electron-builder --${{ matrix.platform }} --publish never
+
+      - name: Upload ${{ matrix.platform }} installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mullion-terminal-${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.AppImage
+            release/*.deb
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out ${{ env.TAG }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Download all installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Extract changelog section for ${{ env.TAG }}
+        id: notes
+        run: |
+          set -eu
+          version="${TAG#v}"
+          notes_file="$(mktemp)"
+          has_notes=false
+          if [ -f CHANGELOG.md ]; then
+            awk -v ver="$version" '
+              BEGIN { found = 0 }
+              /^## *\[/ {
+                if (found) exit
+                if (index($0, "[" ver "]") > 0) { found = 1; next }
+                next
+              }
+              found { print }
+            ' CHANGELOG.md > "$notes_file"
+            # Trim leading/trailing blank lines before deciding whether we found anything.
+            sed -i -e '/./,$!d' "$notes_file"
+            if [ -s "$notes_file" ]; then
+              has_notes=true
+            fi
+          fi
+          echo "has-notes=$has_notes" >> "$GITHUB_OUTPUT"
+          echo "path=$notes_file" >> "$GITHUB_OUTPUT"
+
+      - name: List release assets
+        run: ls -la release-artifacts
+
+      - name: Create or update release ${{ env.TAG }} (from CHANGELOG)
+        if: steps.notes.outputs.has-notes == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Mullion Terminal ${{ env.TAG }}
+          body_path: ${{ steps.notes.outputs.path }}
+          files: |
+            release-artifacts/*.dmg
+            release-artifacts/*.zip
+            release-artifacts/*.exe
+            release-artifacts/*.AppImage
+            release-artifacts/*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create or update release ${{ env.TAG }} (generated notes)
+        if: steps.notes.outputs.has-notes != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Mullion Terminal ${{ env.TAG }}
+          generate_release_notes: true
+          files: |
+            release-artifacts/*.dmg
+            release-artifacts/*.zip
+            release-artifacts/*.exe
+            release-artifacts/*.AppImage
+            release-artifacts/*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
