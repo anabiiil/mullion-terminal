@@ -43,7 +43,14 @@ class PromptParser {
       if (payload[0] === 'ready') {
         const cwd = decodeBase64(payload[1]);
         const path = decodeBase64(payload[2]);
-        if (cwd !== null && !cwd.includes('\0')) this.onPrompt({ ready: true, cwd, path, ...(payload[3] === '1' || payload[3] === '0' ? { navigation: payload[3] === '1' } : {}) });
+        if (cwd !== null && !cwd.includes('\0')) this.onPrompt({
+          ready: true, cwd, path,
+          ...(payload[3] === '1' || payload[3] === '0' ? { navigation: payload[3] === '1' } : {}),
+          // The exit status of the command that just finished, when the shell reported
+          // one (POSIX $?, captured before anything else can clobber it). Used only to
+          // skip learning a command that failed with "command not found" (status 127).
+          ...(payload[4] !== undefined && /^-?\d{1,3}$/.test(payload[4]) ? { status: Number(payload[4]) } : {}),
+        });
       }
       if (payload[0] === 'navigate' && /^[a-f0-9-]{36}$/.test(payload[1] || '') && ['0', '1'].includes(payload[2])) {
         const cwd = decodeBase64(payload[3]);

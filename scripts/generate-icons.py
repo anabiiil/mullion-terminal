@@ -21,7 +21,8 @@ def segment_distance(x, y, ax, ay, bx, by):
 def chunk(kind, data):
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
 
-def render(size):
+def render(size, simple=None):
+    simple = size <= 64 if simple is None else simple
     rows = bytearray()
     scale = 1024 / size
     for y in range(size):
@@ -31,11 +32,17 @@ def render(size):
             outer = rounded_distance(px, py, 42, 42, 982, 982, 210)
             alpha = min(1, max(0, .5 - outer / scale))
             color = [22, 28, 40]
-            border = rounded_distance(px, py, 127, 176, 897, 848, 117)
-            strength = min(1, max(0, .5 - (abs(border) - 17) / scale))
             coral = [255, 122, 92]
-            mark = min(segment_distance(px, py, 300, 362, 454, 511), segment_distance(px, py, 454, 511, 300, 660), segment_distance(px, py, 552, 665, 735, 665))
-            strength = max(strength, min(1, max(0, .5 - (mark - 29) / scale)))
+            if simple:
+                # Menu and list sizes: the thin frame turns to mush, so draw a bold prompt only.
+                strength = 0
+                mark = min(segment_distance(px, py, 270, 300, 500, 512), segment_distance(px, py, 500, 512, 270, 724), segment_distance(px, py, 570, 724, 790, 724))
+                strength = min(1, max(0, .5 - (mark - 62) / scale))
+            else:
+                border = rounded_distance(px, py, 127, 176, 897, 848, 117)
+                strength = min(1, max(0, .5 - (abs(border) - 17) / scale))
+                mark = min(segment_distance(px, py, 300, 362, 454, 511), segment_distance(px, py, 454, 511, 300, 660), segment_distance(px, py, 552, 665, 735, 665))
+                strength = max(strength, min(1, max(0, .5 - (mark - 29) / scale)))
             color = [round(a * (1 - strength) + b * strength) for a, b in zip(color, coral)]
             rows.extend([*color, round(alpha * 255)])
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b"")
@@ -43,7 +50,15 @@ def render(size):
 png = render(1024)
 (OUTPUT / "icon.png").write_bytes(png)
 small = render(256)
-(OUTPUT / "icon.ico").write_bytes(struct.pack("<HHH", 0, 1, 1) + struct.pack("<BBBBHHII", 0, 0, 0, 0, 1, 32, len(small), 22) + small)
+# Windows picks the closest size, so ship the small, simplified ones too.
+ico_images = [(size, render(size)) for size in (16, 24, 32, 48, 64)] + [(256, small)]
+offset = 6 + 16 * len(ico_images)
+entries, blobs = b'', b''
+for size, data in ico_images:
+    entries += struct.pack("<BBBBHHII", size % 256, size % 256, 0, 0, 1, 32, len(data), offset)
+    blobs += data
+    offset += len(data)
+(OUTPUT / "icon.ico").write_bytes(struct.pack("<HHH", 0, 1, len(ico_images)) + entries + blobs)
 types = [('icp4', 16), ('icp5', 32), ('icp6', 64), ('ic07', 128), ('ic08', 256), ('ic09', 512), ('ic10', 1024), ('ic11', 32), ('ic12', 64), ('ic13', 256), ('ic14', 512)]
 images = {1024: png, 256: small}
 chunks = []

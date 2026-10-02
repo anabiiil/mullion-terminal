@@ -104,6 +104,15 @@ try {
     assert.equal(await selected(expectedDirectory).getAttribute('title'), expectedDirectory);
   }
 
+  // A lighter check than expectSameShell for use after other tabs have come
+  // and gone: it does not rely on window.__treeSmokeStates, which keeps every
+  // session id it has ever seen even once a tab closes.
+  async function expectNoNewSession() {
+    assert.equal(await page.locator('[role=tab]').count(), 1, 'A tree click must not create a new terminal tab');
+    assert.equal(await page.locator('.shell-pane').count(), 1, 'A tree click must not create a new terminal pane');
+    assert.deepEqual(await history(), beforeNavigationHistory, 'Tree expansion must not pollute command history');
+  }
+
   async function run(command, expectedDirectory) {
     await ready();
     const before = (await history()).find(entry => entry.command === command)?.count ?? 0;
@@ -147,11 +156,26 @@ try {
     await row(directory).waitFor({ state: 'visible', timeout: 10000 });
   }
 
-  // Clicking a child changes the real shell and selects it without replacing the tree.
+  // A single click only toggles a folder open or closed; it must never cd.
+  await page.getByRole('button', { name: 'Expand project', exact: true }).waitFor({ timeout: 10000 });
+  await row(project).click();
+  await page.getByRole('button', { name: 'Collapse project', exact: true }).waitFor({ timeout: 10000 });
+  await row(source).waitFor({ state: 'visible', timeout: 10000 });
+  await ready(fixture);
+  await expectRoot(fixture);
+  await expectSelected(fixture);
+  await row(project).click();
+  await page.getByRole('button', { name: 'Expand project', exact: true }).waitFor({ timeout: 10000 });
+  await row(source).waitFor({ state: 'hidden', timeout: 10000 });
+  await ready(fixture);
+  await expectRoot(fixture);
+  await expectSelected(fixture);
+
+  // Double-clicking a child changes the real shell and selects it without replacing the tree.
   await term.focus();
   await page.keyboard.type('echo pend', { delay: 30 });
   await page.getByRole('listbox', { name: 'Command suggestions' }).waitFor({ state: 'visible', timeout: 10000 });
-  await row(project).click();
+  await row(project).dblclick();
   await ready(project);
   await expectRoot(fixture);
   await expectSelected(project);
@@ -180,7 +204,7 @@ try {
   const expandProject = page.getByRole('button', { name: 'Expand project', exact: true });
   if (await expandProject.count()) await expandProject.click();
   await row(source).waitFor({ state: 'visible', timeout: 10000 });
-  await row(source).click();
+  await row(source).dblclick();
   await ready(source);
   await expectRoot(fixture);
   await expectSelected(source);
@@ -255,8 +279,40 @@ try {
   assert.equal(await page.locator('[role=tab]').count(), 1);
   await expectRoot(temporary);
   await expectSelected(source);
+
+  // A single click on a sibling folder only expands it; the shell never moves.
+  beforeNavigationHistory = await history();
+  const assetsDirectory = path.join(fixture, 'assets');
+  await row(assetsDirectory).waitFor({ state: 'visible', timeout: 10000 });
+  await page.getByRole('button', { name: 'Expand assets', exact: true }).waitFor({ timeout: 10000 });
+  await row(assetsDirectory).click();
+  await page.getByRole('button', { name: 'Collapse assets', exact: true }).waitFor({ timeout: 10000 });
+  await ready(source);
+  await expectRoot(temporary);
+  await expectSelected(source);
+  await expectNoNewSession();
+
+  // Double-clicking a file edits it with nano in the active shell, using a path relative to cwd.
+  const expandSource = page.getByRole('button', { name: 'Expand src', exact: true });
+  await expandSource.waitFor({ timeout: 10000 });
+  await expandSource.click();
+  const exampleFile = path.join(source, 'example.txt');
+  const beforeEditHistory = await history();
+  await row(exampleFile).waitFor({ state: 'visible', timeout: 10000 });
+  await row(exampleFile).dblclick();
+  await page.locator('.editor-bar').waitFor({ timeout: 8000 });
+  await page.waitForFunction(() => [...document.querySelectorAll('.shell-pane.active .xterm-rows > div')]
+    .some(line => line.textContent.includes('Tree selection fixture')), undefined, { timeout: 10000 });
+  await page.getByRole('button', { name: 'Exit', exact: true }).click();
+  await page.locator('.editor-bar').waitFor({ state: 'detached', timeout: 5000 });
+  await ready(source);
+  await expectRoot(temporary);
+  await expectSelected(source);
+  assert.deepEqual(await history(), beforeEditHistory,
+    'The app opening nano on the user\'s behalf from the tree must never be learned as command history');
+
   assert.deepEqual(errors, []);
-  console.log('Tree smoke passed: silent same-PTY navigation, retained variables/output, clean history, stable selected roots, ancestors, sidebar remounts and Home tabs from plus/shortcut.');
+  console.log('Tree smoke passed: click-to-expand without cd, double-click-to-cd and double-click-to-edit with nano (never recorded in history), silent same-PTY navigation, retained variables/output, clean history, stable selected roots, ancestors, sidebar remounts and Home tabs from plus/shortcut.');
 } catch (error) {
   await page?.screenshot({ path: path.join(results, 'tree-failure.png') }).catch(() => {});
   console.error('Renderer errors:', errors);

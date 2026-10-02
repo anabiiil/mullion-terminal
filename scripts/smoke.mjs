@@ -73,8 +73,8 @@ try {
   await run("printf 'hello-terminal\\n'");
   assert.equal((await history()).find(value => value.command === "printf 'hello-terminal\\n'").count, 2);
 
-  // Folder navigation changes the real shell, including paths containing spaces.
-  await page.locator('.tree-name').filter({ hasText: 'Workspace with spaces' }).click();
+  // Double-clicking a folder changes the real shell, including paths containing spaces.
+  await page.locator('.tree-name').filter({ hasText: 'Workspace with spaces' }).dblclick();
   await ready();
   await page.waitForFunction(() => document.querySelector('.current-path')?.getAttribute('title')?.endsWith('Workspace with spaces'));
   await run('cd nested');
@@ -92,35 +92,37 @@ try {
   await page.waitForFunction(() => document.querySelector('.current-path')?.getAttribute('title')?.endsWith('Workspace with spaces'));
 
   // Learn a command; Auto-complete on accepts and executes the whole command.
-  await run('echo learned-terminal');
+  // `test` (not `echo`) is used here because it is a real, meaningful command rather than
+  // one of the basic/system commands the quick bar and history sidebar now hide.
+  await run('test learned-terminal');
   await term.focus();
-  await page.keyboard.type('echo learn', { delay: 35 });
+  await page.keyboard.type('test learn', { delay: 35 });
   await page.getByRole('listbox', { name: 'Command suggestions' }).waitFor();
-  assert.match(await page.locator('.suggestions [aria-selected=true]').innerText(), /echo learned-terminal/);
+  assert.match(await page.locator('.suggestions [aria-selected=true]').innerText(), /test learned-terminal/);
   await page.keyboard.press('Enter');
   await ready();
-  assert.equal((await history()).find(value => value.command === 'echo learned-terminal').count, 2);
+  assert.equal((await history()).find(value => value.command === 'test learned-terminal').count, 2);
 
   // Auto-complete off: Enter preserves typed input, Tab fills without executing.
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('checkbox', { name: 'Auto-complete', exact: true }).uncheck();
   await page.getByRole('button', { name: 'Close settings' }).click();
   await term.focus();
-  await page.keyboard.type('echo learn', { delay: 30 });
+  await page.keyboard.type('test learn', { delay: 30 });
   await page.locator('.inline-suggestion').waitFor();
   assert.equal(await page.getByRole('listbox').count(), 0);
   await page.keyboard.press('Enter');
   await ready();
-  assert.ok((await history()).some(value => value.command === 'echo learn'));
+  assert.ok((await history()).some(value => value.command === 'test learn'));
   await term.focus();
-  await page.keyboard.type('echo learned-', { delay: 30 });
+  await page.keyboard.type('test learned-', { delay: 30 });
   await page.locator('.inline-suggestion').waitFor();
   await page.keyboard.press('Tab');
   await page.waitForTimeout(200);
-  assert.equal((await history()).find(value => value.command === 'echo learned-terminal').count, 2);
+  assert.equal((await history()).find(value => value.command === 'test learned-terminal').count, 2);
   await page.keyboard.press('Enter');
   await ready();
-  assert.equal((await history()).find(value => value.command === 'echo learned-terminal').count, 3);
+  assert.equal((await history()).find(value => value.command === 'test learned-terminal').count, 3);
 
   // Interactive process gets raw input, no popup; Ctrl+C restores the prompt.
   await run("printf 'before-interactive\\n'");
@@ -147,8 +149,8 @@ try {
   await ready();
   assert.equal(await page.locator('[role=tab]').count(), 1);
   await page.getByRole('button', { name: 'Command history', exact: true }).click();
-  await page.getByRole('button', { name: 'Pin echo learned-terminal', exact: true }).click();
-  assert.equal((await history()).find(value => value.command === 'echo learned-terminal').pinned, true);
+  await page.getByRole('button', { name: 'Pin test learned-terminal', exact: true }).click();
+  assert.equal((await history()).find(value => value.command === 'test learned-terminal').pinned, true);
   await page.getByRole('button', { name: 'Toggle files sidebar' }).click();
   await ready();
   await page.waitForTimeout(200);
@@ -160,7 +162,7 @@ try {
   await term.focus();
   await page.waitForFunction(() => document.activeElement === document.querySelector('.shell-pane.active .xterm-helper-textarea'),
     undefined, { timeout: 5000 });
-  await page.keyboard.type('echo learned-', { delay: 30 });
+  await page.keyboard.type('test learned-', { delay: 30 });
   await page.locator('.inline-suggestion').waitFor();
   await page.screenshot({ path: path.join(root, 'test-results', 'suggestions.png') });
   await page.keyboard.press('Escape');

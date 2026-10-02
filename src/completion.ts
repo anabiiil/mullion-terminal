@@ -18,6 +18,83 @@ const COMMON_COMMANDS: CompletionCandidate[] = [
 
 interface LearnedCommand extends HistoryEntry { local: boolean }
 
+// Mirrors electron/completions.cjs's detector: anything the app types into the shell on
+// the user's behalf (sidebar folder navigation, internal hooks), never something the
+// user actually typed.
+const INJECTED_COMMAND_PATTERN = /^builtin\b|^set-location\s+-literalpath\b|__mullion/i;
+
+/** True for an app-injected command that must never be treated as learned user history. */
+export function isInjectedCommand(command: string): boolean {
+  return INJECTED_COMMAND_PATTERN.test(command.trim());
+}
+
+// Whole-command matches: the entire trimmed input, not just its first word.
+const BASIC_EXACT = new Set(['..', '~']);
+
+// Any command whose first word is one of these is routine/system shell use,
+// never "your commands" — regardless of arguments. Covers navigation, listing,
+// file management, basic editors, and their PowerShell equivalents.
+const BASIC_COMMANDS = new Set([
+  'cd', 'pushd', 'popd', 'ls', 'll', 'la', 'l', 'dir', 'pwd', 'clear', 'cls', 'reset', 'exit', 'logout',
+  'history', 'rm', 'rmdir', 'mv', 'cp', 'mkdir', 'touch', 'cat', 'less', 'more', 'head', 'tail', 'open',
+  'xdg-open', 'start', 'explorer', 'nano', 'rnano', 'pico', 'vi', 'vim', 'nvim', 'view', 'emacs', 'echo',
+  'printf', 'arch', 'uname', 'whoami', 'hostname', 'date', 'cal', 'which', 'where', 'type', 'man', 'help',
+  'chmod', 'chown', 'ln', 'file', 'stat', 'du', 'df', 'tree', 'sleep', 'true', 'false',
+  // PowerShell equivalents.
+  'set-location', 'sl', 'chdir', 'get-location', 'gl', 'get-childitem', 'gci', 'remove-item', 'ri', 'del',
+  'erase', 'move-item', 'mi', 'move', 'copy-item', 'ci', 'copy', 'new-item', 'ni', 'md', 'get-content', 'gc',
+  'clear-host', 'write-output', 'write-host',
+]);
+
+/** Directory-changing commands, used to keep learned suggestions from ever offering a `cd …`. */
+const NAVIGATION_COMMANDS = new Set(['cd', 'pushd', 'popd', 'set-location', 'sl', 'chdir']);
+
+/** True when `command`'s first word changes the shell's directory (cd, pushd/popd, and
+ * their PowerShell equivalents). A learned command like this is never a useful suggestion:
+ * directory completion after a freshly typed `cd ` is handled separately, from the live
+ * filesystem rather than history. */
+function isNavigationCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed) return false;
+  return NAVIGATION_COMMANDS.has(meaningfulTokens(trimmed)[0]?.toLowerCase() ?? '');
+}
+
+const ENVIRONMENT_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const COMMAND_PREFIX_WORDS = new Set(['sudo', 'command', 'builtin']);
+// A single token made only of non-ASCII characters (e.g. a mistyped word the
+// shell reported as "command not found") is noise, never a command worth surfacing.
+const NON_ASCII_ONLY = /^[^\x00-\x7f]+$/;
+
+/** The command's real first word, after stripping leading env assignments (`FOO=1`) and
+ * `sudo`/`command`/`builtin` wrappers that don't change what's actually being run. */
+function meaningfulTokens(trimmed: string): string[] {
+  const tokens = trimmed.split(/\s+/);
+  while (tokens.length > 1 && (ENVIRONMENT_ASSIGNMENT.test(tokens[0]) || COMMAND_PREFIX_WORDS.has(tokens[0].toLowerCase()))) tokens.shift();
+  return tokens;
+}
+
+/**
+ * Commands too routine, or too garbled, to be worth surfacing as "your commands": plain
+ * navigation, file management, basic editors, and system info, in any shell dialect this
+ * app supports, plus single-token non-ASCII noise. These are still kept in history for
+ * suggestion ranking (so typing `rm ` still offers a learned path), but are hidden from the
+ * history sidebar, the quick-commands bar, and "most used" ranking. App-injected commands
+ * are always basic.
+ */
+export function isBasicCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (!trimmed || isInjectedCommand(trimmed)) return true;
+  if (BASIC_EXACT.has(trimmed.toLowerCase())) return true;
+  const tokens = meaningfulTokens(trimmed);
+  const first = tokens[0].toLowerCase();
+  if (BASIC_COMMANDS.has(first)) return true;
+  if (tokens.length === 1 && NON_ASCII_ONLY.test(tokens[0])) return true;
+  return false;
+}
+
+/** @deprecated Use {@link isBasicCommand}. Kept as an alias for existing call sites. */
+export const isTrivialCommand = isBasicCommand;
+
 const WINDOWS_COMMANDS: CompletionCandidate[] = [
   { value: 'Get-ChildItem', label: 'Get-ChildItem', kind: 'command', detail: 'List directory contents' },
   { value: 'Get-Location', label: 'Get-Location', kind: 'command', detail: 'Show the current directory' },
@@ -72,9 +149,12 @@ function aggregateHistory(history: HistoryEntry[], cwd?: string, platform = 'uni
   return [...commands.values()];
 }
 
-/** Most-used commands only: the starter command hints never enter this list. */
+/** Most-used commands only: the starter command hints and basic/system commands
+ * (cd, ls, pwd, clear, …) never enter this list, even though they remain in history for
+ * suggestion ranking. */
 export function frequentCommands(history: HistoryEntry[], limit = 8): HistoryEntry[] {
   return aggregateHistory(history)
+    .filter(entry => !isBasicCommand(entry.command))
     .sort((a, b) => Number(b.pinned) - Number(a.pinned)
       || b.count - a.count || b.lastUsed - a.lastUsed || a.command.localeCompare(b.command))
     .slice(0, Math.max(0, Math.floor(limit)))
@@ -184,6 +264,9 @@ export function rankSuggestions(
 
   const now = Date.now();
   for (const entry of aggregateHistory(history, cwd, platform)) {
+    // Never offer a learned `cd …`/`pushd …` as a suggestion, and app-injected
+    // commands should already be absent from history, but never trust that blindly.
+    if (isInjectedCommand(entry.command) || isNavigationCommand(entry.command)) continue;
     const ageInDays = Math.max(0, now - entry.lastUsed) / 86_400_000;
     const recency = 30 / (1 + ageInDays / 7);
     const score = 1_000 + (entry.pinned ? 10_000 : 0)
@@ -192,7 +275,7 @@ export function rankSuggestions(
       value: entry.command,
       label: entry.command,
       kind: 'history',
-      detail: `${entry.pinned ? 'Pinned · ' : ''}Used ${entry.count} ${entry.count === 1 ? 'time' : 'times'}${entry.local ? ' · This directory' : ''}`,
+      detail: `${entry.pinned ? 'Pinned · ' : ''}Used ${entry.count}×${entry.local ? ' here' : ''}`,
     }, score);
   }
 

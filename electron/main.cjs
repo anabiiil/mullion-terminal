@@ -3,6 +3,8 @@
 const { app, BrowserWindow, ipcMain, dialog, clipboard, shell: desktopShell, session: electronSession } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
+const EDITOR_PROCESS = /^(?:n?vim|vi|view|r?nano|pico)$/i;
 const os = require('node:os');
 const { pathToFileURL } = require('node:url');
 const { randomUUID, randomBytes } = require('node:crypto');
@@ -13,6 +15,8 @@ const { defaultEnvironment, prepareShell, NAVIGATION_SEQUENCE, navigationRequest
 const { complete } = require('./completions.cjs');
 const { SubmissionTracker } = require('./submissions.cjs');
 const { createEditorService } = require('./editors.cjs');
+const { pathsFromArgv, resolveOpenTarget } = require('./open-paths.cjs');
+const { installFinderQuickAction, removeFinderQuickAction, templateDirectory } = require('./finder-service.cjs');
 
 app.setName('Mullion Terminal');
 const sessions = new Map();
@@ -42,6 +46,56 @@ if (requestedUserData) {
   app.setPath('userData', testingDirectory);
 }
 
+// "Open with Mullion Terminal" (Finder/Explorer/file-manager right-click, a
+// file or folder dropped on the Dock icon, or `mullion-terminal <path>` from
+// a shell) — a folder opens a tab there, a file opens a tab in its parent
+// folder and then opens the file the same way the tree's double-click does.
+// Targets are queued here and only ever sent to the renderer once it has
+// bootstrapped (see the `bootstrap` handler below and `window`'s `closed`
+// listener), since the very first one can arrive before any window exists.
+// Keeps the macOS "Open in Mullion Terminal" Quick Action in step with the
+// setting. Fire-and-forget: a failure here must never block startup or a
+// settings save. Runs are chained so quick toggles apply in order.
+let finderQuickActionQueue = Promise.resolve();
+function syncFinderQuickAction(settings) {
+  // Dev and test runs must not touch the user's real ~/Library/Services.
+  if (process.platform !== 'darwin' || !app.isPackaged) return;
+  const enabled = settings?.finderQuickAction !== false;
+  finderQuickActionQueue = finderQuickActionQueue.then(() => enabled
+    ? installFinderQuickAction({ templateDir: templateDirectory({ isPackaged: app.isPackaged }), appPath: path.resolve(process.execPath, '../../..') })
+    : removeFinderQuickAction()
+  ).catch(error => console.warn('Could not update the Finder Quick Action:', error.message));
+}
+
+let rendererReady = false;
+const pendingOpenPaths = [];
+function queueOrOpenTargets(targets) {
+  if (!targets.length) return;
+  if (rendererReady) for (const target of targets) sendOpenPath(target);
+  else pendingOpenPaths.push(...targets);
+  if (window) { if (window.isMinimized()) window.restore(); window.focus(); }
+  // macOS keeps running with no window; Finder/Dock opens must bring one back.
+  else if (app.isReady()) createWindow();
+}
+function sendOpenPath(target) {
+  if (target.isDirectory) send({ type: 'open-path', path: target.path, isDirectory: true });
+  else send({ type: 'open-path', path: path.dirname(target.path), isDirectory: false, filePath: target.path });
+}
+function flushPendingOpenPaths() {
+  if (!rendererReady || !pendingOpenPaths.length) return;
+  for (const target of pendingOpenPaths.splice(0, pendingOpenPaths.length)) sendOpenPath(target);
+}
+// A CLI launch (`mullion-terminal <path>`, or Windows/Linux "Open with
+// Mullion Terminal") hands its paths as plain argv.
+queueOrOpenTargets(pathsFromArgv(process.argv, { cwd: process.cwd(), isPackaged: app.isPackaged }));
+// macOS hands Finder's "Open With" and a Dock drop through 'open-file'
+// instead, which can fire before 'ready' — the listener must exist already.
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  const target = resolveOpenTarget(filePath, process.cwd());
+  if (target) queueOrOpenTargets([target]);
+});
+
 function trustedUrl(value) {
   if (development) {
     try { return new URL(value).origin === 'http://127.0.0.1:5173'; } catch { return false; }
@@ -57,6 +111,14 @@ function text(value, maximum = 32768) {
   if (typeof value !== 'string' || !value || value.length > maximum || value.includes('\0')) throw new Error('Invalid text argument.');
   return value;
 }
+
+const MAX_PREVIEW_TEXT_BYTES = 2 * 1024 * 1024;
+const MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
+const EXTERNAL_LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+const PREVIEW_IMAGE_TYPES = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+  '.avif': 'image/avif', '.bmp': 'image/bmp', '.ico': 'image/x-icon', '.svg': 'image/svg+xml',
+};
 
 function resolvedPath(value, base = home) {
   const input = text(value);
@@ -82,14 +144,14 @@ function ready(session, value) {
   state(session);
 }
 
-function write(session, data, submittedCommand) {
+function write(session, data, submittedCommand, record) {
   if (session.navigationPending) {
-    session.navigationPending.input.push({ data, submittedCommand });
+    session.navigationPending.input.push({ data, submittedCommand, record });
     return;
   }
   // Readline owns editing, history navigation, signals, and interactive programs.
   // Any submitted line or Ctrl-C is busy until the real shell renders a prompt.
-  if (session.info.ready && /[\r\n]/.test(data)) session.submissions.submit(data === '\r' ? submittedCommand : undefined);
+  if (session.info.ready && /[\r\n]/.test(data)) session.submissions.submit(data === '\r' ? submittedCommand : undefined, { record });
   if (/[\r\n\x03]/.test(data)) ready(session, false);
   session.pty.write(data);
 }
@@ -111,7 +173,7 @@ function finishNavigation(session, error) {
       // On failure retain typed text for inspection rather than execute a queued
       // Enter in the directory the user was trying to leave.
       const data = error ? input.data.replace(/[\r\n]/g, '') : input.data;
-      if (data) write(session, data, error ? undefined : input.submittedCommand);
+      if (data) write(session, data, error ? undefined : input.submittedCommand, error ? undefined : input.record);
     }
   });
 }
@@ -148,7 +210,7 @@ async function createSession(directory = startupDirectory) {
   });
   const parser = new PromptParser(nonce, prompt => {
     if (!session.info.alive) return;
-    if (prompt.ready) session.submissions.finish();
+    if (prompt.ready) session.submissions.finish(prompt.status);
     if (prompt.ready && path.isAbsolute(prompt.cwd)) session.info.cwd = path.normalize(prompt.cwd);
     if (typeof prompt.path === 'string') session.environmentPath = prompt.path;
     if (typeof prompt.navigation === 'boolean') session.navigationAvailable = prompt.navigation;
@@ -200,7 +262,16 @@ function registerIpc() {
   function handle(channel, handler) {
     ipcMain.handle(`terminal:${channel}`, (event, ...args) => { assertSender(event); return handler(...args); });
   }
-  handle('bootstrap', () => ({ home, platform: process.platform, ...store.snapshot() }));
+  handle('bootstrap', () => {
+    // The renderer's bootstrap call is also its "I'm ready for events" signal:
+    // any open-path targets queued before now (startup argv, or a Finder
+    // 'open-file' that arrived before the window existed) are flushed right
+    // after, once this response's listeners are certainly attached.
+    const openPathCount = pendingOpenPaths.length;
+    rendererReady = true;
+    setImmediate(flushPendingOpenPaths);
+    return { home, platform: process.platform, openPathCount, ...store.snapshot() };
+  });
   handle('create-session', createSession);
   handle('close-session', id => { text(id, 64); closeSession(id); });
   handle('change-directory', async (id, directory) => {
@@ -261,15 +332,39 @@ function registerIpc() {
     const session = getSession(id);
     return editorService.openEditor(session.info.cwd, session.environmentPath, text(editorId, 64));
   });
+  handle('foreground-process', id => {
+    // node-pty reports the terminal's foreground process name (macOS/Linux) or
+    // the shell itself (Windows). Used only to offer editor shortcuts.
+    const session = getSession(id);
+    let name = '';
+    try { name = String(session.pty.process || ''); } catch { return ''; }
+    const tty = typeof session.pty._pty === 'string' ? session.pty._pty.replace(/^\/dev\//, '') : '';
+    // git starts its editor in its own foreground process group, so the group
+    // leader is still "git"; look for an editor among the foreground members.
+    if (process.platform === 'win32' || !tty || EDITOR_PROCESS.test(path.basename(name))) return name;
+    return new Promise(resolve => {
+      execFile('ps', ['-t', tty, '-o', 'stat=,comm='], { timeout: 1000 }, (error, stdout) => {
+        if (error) return resolve(name);
+        const editor = String(stdout).split('\n').map(line => line.trim().split(/\s+/))
+          .find(([stat, command]) => stat?.includes('+') && command && EDITOR_PROCESS.test(path.basename(command)));
+        resolve(editor ? path.basename(editor[1]) : name);
+      });
+    });
+  });
   handle('record-command', (command, cwd) => store.record(text(command, 8192), resolvedPath(cwd)));
   handle('pin-command', (command, pinned) => {
     if (typeof pinned !== 'boolean') throw new Error('Invalid pin setting.');
     return store.pin(text(command, 8192), pinned);
   });
+  handle('delete-command', command => store.deleteCommand(text(command, 8192)));
+  handle('restore-command', entry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('Invalid history entry.');
+    return store.restoreCommand(entry);
+  });
   handle('clear-history', () => store.clear());
   handle('save-settings', settings => {
     if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('Invalid settings.');
-    return store.saveSettings(settings);
+    return store.saveSettings(settings).then(saved => { syncFinderQuickAction(saved); return saved; });
   });
   handle('choose-directory', async () => {
     const result = await dialog.showOpenDialog(window, { title: 'Open directory', defaultPath: home, properties: ['openDirectory'] });
@@ -288,16 +383,51 @@ function registerIpc() {
     const error = await desktopShell.openPath(target);
     if (error) throw new Error(error);
   });
+  // The Markdown preview reads documents and their images only through these
+  // size-limited handlers; the renderer never loads local files by URL.
+  handle('read-text-file', async file => {
+    const target = resolvedPath(file);
+    const details = await fs.stat(target);
+    if (!details.isFile()) throw new Error('Select a file to preview.');
+    if (details.size > MAX_PREVIEW_TEXT_BYTES) throw new Error(`${path.basename(target)} is larger than 2 MiB, too large to preview.`);
+    return fs.readFile(target, 'utf8');
+  });
+  handle('read-image', async file => {
+    const target = resolvedPath(file);
+    const type = PREVIEW_IMAGE_TYPES[path.extname(target).toLowerCase()];
+    if (!type) throw new Error('Only image files can be shown in the preview.');
+    const details = await fs.stat(target);
+    if (!details.isFile()) throw new Error('Select an image file.');
+    if (details.size > MAX_PREVIEW_IMAGE_BYTES) throw new Error(`${path.basename(target)} is larger than 8 MiB, too large to preview.`);
+    return `data:${type};base64,${(await fs.readFile(target)).toString('base64')}`;
+  });
+  handle('open-external-link', async value => {
+    let url;
+    try { url = new URL(text(value, 8192)); } catch { throw new Error('Invalid link.'); }
+    if (!EXTERNAL_LINK_PROTOCOLS.has(url.protocol)) throw new Error(`Links using ${url.protocol} can't be opened from the preview.`);
+    await desktopShell.openExternal(url.href);
+  });
   handle('copy-text', value => {
     if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > 1048576) throw new Error('Clipboard text must be smaller than 1 MiB.');
     return clipboard.writeText(value);
   });
-  handle('read-text', () => clipboard.readText().slice(0, 1048576));
-  ipcMain.on('terminal:write', (event, id, data, submittedCommand) => {
+  handle('read-text', async () => String(await clipboard.readText()).slice(0, 1048576));
+  ipcMain.on('terminal:write', (event, id, data, submittedCommand, record) => {
     try {
       assertSender(event);
       if (typeof data !== 'string' || !data || data.length > 1048576) return;
-      write(getSession(id), data, submittedCommand);
+      // Only an explicit `false` ever suppresses recording; anything else keeps the default.
+      write(getSession(id), data, submittedCommand, record === false ? false : undefined);
+    } catch { /* Ignore stale writes from a closed tab. */ }
+  });
+  ipcMain.on('terminal:write-binary', (event, id, data) => {
+    // xterm's X10/normal mouse reports are raw bytes (coordinates above 95
+    // exceed ASCII), so they must not be UTF-8 encoded like typed text.
+    try {
+      assertSender(event);
+      if (typeof data !== 'string' || !data || data.length > 4096 || /[^\x00-\xff]/.test(data)) return;
+      const session = getSession(id);
+      if (!session.navigationPending) session.pty.write(Buffer.from(data, 'latin1'));
     } catch { /* Ignore stale writes from a closed tab. */ }
   });
   ipcMain.on('terminal:resize', (event, id, cols, rows) => {
@@ -330,7 +460,7 @@ function createWindow() {
   window.webContents.on('will-navigate', (event, url) => { if (!trustedUrl(url)) event.preventDefault(); });
   window.webContents.on('will-attach-webview', event => event.preventDefault());
   window.on('ready-to-show', () => window?.show());
-  window.on('closed', () => { for (const id of [...sessions.keys()]) closeSession(id); window = null; });
+  window.on('closed', () => { for (const id of [...sessions.keys()]) closeSession(id); window = null; rendererReady = false; });
   window.loadURL(appUrl).catch(error => {
     dialog.showErrorBox('Could not open Mullion Terminal', `${error.message}\n\nRun npm run build before starting the application.`);
     app.quit();
@@ -339,10 +469,17 @@ function createWindow() {
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', () => { if (window) { if (window.isMinimized()) window.restore(); window.focus(); } else createWindow(); });
+  app.on('second-instance', (_event, argv, workingDirectory) => {
+    const targets = pathsFromArgv(argv, { cwd: workingDirectory, isPackaged: app.isPackaged });
+    if (!window) { pendingOpenPaths.push(...targets); createWindow(); return; }
+    if (window.isMinimized()) window.restore();
+    window.focus();
+    if (targets.length) queueOrOpenTargets(targets);
+  });
   app.whenReady().then(async () => {
     store = new LocalStore(app.getPath('userData'));
     await store.load();
+    syncFinderQuickAction(store.snapshot().settings);
     integrationRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'mullion-terminal-'));
     electronSession.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     electronSession.defaultSession.setPermissionCheckHandler(() => false);

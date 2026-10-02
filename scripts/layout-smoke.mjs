@@ -64,7 +64,8 @@ try {
   assert.equal(await page.locator('.sidebar').count(), 0, 'The sidebar should start closed');
   assert.equal(await quick.count(), 1, 'The quick command row should be available before learning commands');
   assert.equal(await quick.getAttribute('aria-label'), 'Quick commands');
-  assert.equal(await quick.getByRole('button', { name: 'Insert pwd', exact: true }).count(), 1);
+  assert.equal(await quick.locator('.quick-command').count(), 0, 'No placeholder commands before anything is learned');
+  assert.match(await quick.innerText(), /Commands you run will show up here/);
   assert.equal(await page.locator('.page-heading, .page-actions, .terminal-footer, .frequent-bar, .activity-bar').count(), 0,
     'The terminal should not reserve screen space for dashboard panels');
   assert.equal(await page.getByRole('heading', { level: 1 }).count(), 0, 'The terminal should not have a page heading');
@@ -139,8 +140,10 @@ try {
   const initial = await geometry();
   checkLayout(initial, 'Default window');
   await page.screenshot({ path: path.join(results, 'terminal-full-layout.png') });
-  const learned = 'echo layout-quick-learned';
-  const other = 'echo layout-quick-other';
+  // `test` (not `echo`) is used here because it is a real, meaningful command rather than
+  // one of the basic/system commands the quick bar and history sidebar now hide.
+  const learned = 'test layout-quick-learned';
+  const other = 'test layout-quick-other';
   await run(learned);
   await quick.getByRole('button', { name: `Insert ${learned}`, exact: true }).waitFor({ state: 'visible', timeout: 10000 });
   assert.equal(await quick.getAttribute('aria-label'), 'Most-used commands');

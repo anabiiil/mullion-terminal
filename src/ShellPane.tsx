@@ -8,8 +8,19 @@ import { inlineCompletion, rankSuggestions } from './completion';
 import { ShellInputTracker } from './input-tracker';
 import { attachOutput } from './events';
 import { suggestionPosition } from './suggestion-position';
+import { shortcutAction } from './keys';
+import { editorKind, ESC_DELAY_MS, looksLikeGitEditorBuffer, NANO_KEYS, VIM_KEYS, type EditorKind } from './editor-process';
+import { accumulateWheelLines, arrowKeysForLines } from './wheel-scroll';
+import EditorBar from './EditorBar';
+import CommandText from './CommandText';
 
-export interface ShellHandle { focus(): void; insert(command: string): void; clear(): void; }
+export interface ShellHandle {
+  focus(): void; insert(command: string): void;
+  // `options.record: false` marks a command the app is running on the user's behalf (e.g. a
+  // tree double-click opening nano) so it's never learned as something the user "works with".
+  run(command: string, options?: { record?: boolean }): boolean;
+  clear(): void;
+}
 interface SuggestionPopup { items: Suggestion[]; selected: number; line: string; trackerRevision: number }
 interface Props {
   session: SessionInfo; active: boolean; settings: Settings; history: HistoryEntry[];
@@ -37,7 +48,28 @@ export default function ShellPane(props: Props) {
   const revision = useRef(0);
   const chooseSuggestion = useRef<(expected: SuggestionPopup, index: number) => void>(() => {});
   const requestSuggestions = useRef<() => void>(() => {});
+  const [foregroundEditor, setForegroundEditor] = useState<EditorKind>(null);
+  const foregroundEditorRef = useRef<EditorKind>(null);
+  const checkForeground = useRef<() => void>(() => {});
 
+  // nano/pico take a single, complete key sequence.
+  function editorKeys(data: string) {
+    if (!foregroundEditorRef.current || !props.session.alive) return;
+    window.terminalAPI!.write(props.session.id, data);
+    termRef.current?.focus();
+  }
+  // vim needs Escape written separately (see ESC_DELAY_MS) before a
+  // command-line command, so it works from Insert mode too.
+  function vimCommand(command: string) {
+    if (foregroundEditorRef.current !== 'vim' || !props.session.alive) return;
+    const api = window.terminalAPI!;
+    const id = props.session.id;
+    api.write(id, '\x1b');
+    setTimeout(() => {
+      if (foregroundEditorRef.current === 'vim' && props.session.alive) api.write(id, command);
+    }, ESC_DELAY_MS);
+    termRef.current?.focus();
+  }
   function hide() { if (popup.current) { popup.current = null; setSuggestions(null); } }
 
   useLayoutEffect(() => {
@@ -87,7 +119,8 @@ export default function ShellPane(props: Props) {
       fontSize: current.current.settings.fontSize, lineHeight: 1.22,
       cursorBlink: true, cursorStyle: 'bar', cursorWidth: 2,
       scrollback: 10000, theme: themes[current.current.settings.theme],
-      macOptionIsMeta: true, drawBoldTextInBrightColors: false,
+      // Option+drag still selects text while nano/vim capture the mouse.
+      macOptionIsMeta: true, macOptionClickForcesSelection: true, drawBoldTextInBrightColors: false,
       smoothScrollDuration: 100, allowProposedApi: false,
     });
     const fit = new FitAddon();
@@ -97,6 +130,7 @@ export default function ShellPane(props: Props) {
     fitRef.current = fit;
     let timer: ReturnType<typeof setTimeout>;
     let disposed = false;
+    let wheelAccumulated = 0;
 
     async function suggest() {
       const p = current.current;
@@ -122,7 +156,7 @@ export default function ShellPane(props: Props) {
     }
 
     function schedule() { clearTimeout(timer); timer = setTimeout(suggest, 65); }
-    function send(data: string, acceptedCommand?: string) {
+    function send(data: string, acceptedCommand?: string, record?: boolean) {
       // Capture before beforeInput resets the line on Enter. The accepted
       // replacement is already verified against the popup's source line, but
       // its final echo may still be pending when autocomplete submits it.
@@ -131,7 +165,7 @@ export default function ShellPane(props: Props) {
       revision.current++;
       if (current.current.session.ready) tracker.current.beforeInput(data, term);
       else tracker.current.reset();
-      api.write(id, data, submittedCommand);
+      api.write(id, data, submittedCommand, record);
     }
     function validPopup(value: SuggestionPopup): boolean {
       const p = current.current;
@@ -163,22 +197,51 @@ export default function ShellPane(props: Props) {
     };
     requestSuggestions.current = schedule;
 
+    function paste() {
+      api.readText().then(text => { if (text && !disposed) term.paste(text); }).catch(current.current.onError);
+    }
+    // Git launches the editor as a plain child, not its own process group,
+    // so the foreground name stays "git" the whole time vim is open — see
+    // the comment above looksLikeGitEditorBuffer for why we fall back to
+    // reading the screen itself in that case.
+    function visibleLines(): string[] {
+      const buffer = term.buffer.active;
+      const lines: string[] = [];
+      for (let y = 0; y < term.rows; y++) lines.push(buffer.getLine(buffer.viewportY + y)?.translateToString(true) ?? '');
+      return lines;
+    }
+    checkForeground.current = () => {
+      const p = current.current;
+      if (disposed || !p.session.alive || p.session.ready) { foregroundEditorRef.current = null; setForegroundEditor(null); return; }
+      api.foregroundProcess(id).then(name => {
+        const latest = current.current;
+        if (disposed || !latest.session.alive || latest.session.ready) return;
+        const value = editorKind(name) ?? (term.buffer.active.type === 'alternate' && looksLikeGitEditorBuffer(visibleLines()) ? 'vim' : null);
+        foregroundEditorRef.current = value; setForegroundEditor(value);
+      }).catch(() => {});
+    };
+
+    // Cmd/Ctrl+S inside vim: Escape (if still in Insert mode) then :w.
+    function sendVimSave() {
+      api.write(id, '\x1b');
+      setTimeout(() => {
+        if (!disposed && foregroundEditorRef.current === 'vim' && current.current.session.alive) api.write(id, VIM_KEYS.save);
+      }, ESC_DELAY_MS);
+    }
+
     term.attachCustomKeyEventHandler(event => {
-      const mod = event.metaKey || event.ctrlKey;
       if (event.type !== 'keydown') return true;
       if (event.defaultPrevented) return false;
-      if (mod && (event.key.toLowerCase() === 'c') && term.hasSelection()) {
-        api.copyText(term.getSelection()).catch(current.current.onError);
-        event.preventDefault(); return false;
-      }
-      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'c') return false;
-      if (mod && !event.altKey && event.key.toLowerCase() === 'v') {
+      const action = event.isComposing ? null : shortcutAction(event, {
+        hasSelection: term.hasSelection(), alternateScreen: term.buffer.active.type === 'alternate', editor: foregroundEditorRef.current,
+      });
+      if (action) {
         event.preventDefault();
-        api.readText().then(text => { if (text) term.paste(text); }).catch(current.current.onError);
+        if (action === 'copy') api.copyText(term.getSelection()).catch(current.current.onError);
+        else if (action === 'paste') paste();
+        else if (action === 'clear') term.clear();
+        else if (action === 'save') { if (foregroundEditorRef.current === 'vim') sendVimSave(); else api.write(id, NANO_KEYS.save); }
         return false;
-      }
-      if ((event.metaKey && event.key.toLowerCase() === 'k') || (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'k')) {
-        term.clear(); event.preventDefault(); return false;
       }
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return !event.metaKey;
       // At the shell prompt Escape dismisses hints even before a popup arrives.
@@ -204,6 +267,30 @@ export default function ShellPane(props: Props) {
       return true;
     });
 
+    // nano/pico always turn on xterm mouse tracking (see electron/shell.cjs's
+    // editorWrappers), so by default a wheel notch is reported as a mouse
+    // button 4/5 press — which UW pico (macOS's nano) ignores outright. Vim
+    // with no mouse mode of its own (the common case; we don't force one)
+    // has no tracking either, so a wheel event there currently just does
+    // nothing. In both cases translate the wheel into arrow-key presses,
+    // which every full-screen editor already knows how to handle, instead of
+    // letting xterm.js report (or silently drop) the raw event. A vim that
+    // *has* enabled its own mouse support (the user's vimrc sets `mouse=a`)
+    // is left alone so its native mouse scrolling keeps working.
+    term.attachCustomWheelEventHandler(event => {
+      const editor = foregroundEditorRef.current;
+      const alternateScreen = term.buffer.active.type === 'alternate';
+      const intercept = current.current.session.alive && alternateScreen
+        && (editor === 'nano' || (editor === 'vim' && term.modes.mouseTrackingMode === 'none'));
+      if (!intercept) { wheelAccumulated = 0; return true; }
+      const screenHeight = element.querySelector('.xterm-screen')?.getBoundingClientRect().height;
+      const cellHeight = screenHeight ? screenHeight / term.rows : 17;
+      const { lines, accumulated } = accumulateWheelLines(wheelAccumulated, { deltaY: event.deltaY, deltaMode: event.deltaMode, cellHeight });
+      wheelAccumulated = accumulated;
+      if (lines !== 0) api.write(id, arrowKeysForLines(lines, term.modes.applicationCursorKeysMode));
+      return false;
+    });
+
     const input = term.onData(data => {
       const p = current.current;
       if (!p.session.alive) return;
@@ -214,11 +301,13 @@ export default function ShellPane(props: Props) {
       send(data);
       if (p.session.ready) schedule();
     });
+    // Mouse reports in the default X10 encoding (nano/pico -m) arrive here.
+    const binary = term.onBinary(data => { if (current.current.session.alive) api.writeBinary(id, data); });
     const parsed = term.onWriteParsed(() => { if (current.current.active) schedule(); });
     const resized = term.onResize(({ cols, rows }) => {
       api.resize(id, cols, rows); revision.current++; hide(); schedule();
     });
-    const alternate = term.buffer.onBufferChange(() => { revision.current++; tracker.current.reset(); hide(); });
+    const alternate = term.buffer.onBufferChange(() => { revision.current++; tracker.current.reset(); hide(); wheelAccumulated = 0; checkForeground.current(); });
     const scrolled = term.onScroll(() => { revision.current++; hide(); schedule(); });
     const detach = attachOutput(id, data => term.write(data));
     const observer = new ResizeObserver(() => { if (current.current.active && element.clientWidth) fit.fit(); });
@@ -234,12 +323,25 @@ export default function ShellPane(props: Props) {
         revision.current++;
         api.write(id, '\x05\x15' + command); term.focus();
       },
+      // Replaces the current input line and submits it, like accepting a
+      // suggestion with Enter, so history and the input tracker stay consistent.
+      run: (command, options) => {
+        if (!current.current.session.ready || !current.current.session.alive
+          || !current.current.active || /[\x00-\x1f\x7f-\x9f]/.test(command)) return false;
+        hide(); suppressed.current = true;
+        tracker.current.beforeReplacement(command, term);
+        revision.current++;
+        api.write(id, '\x05\x15' + command);
+        send('\r', command, options?.record);
+        term.focus();
+        return true;
+      },
     });
     requestAnimationFrame(() => { if (!disposed && current.current.active) { fit.fit(); term.focus(); } });
     return () => {
       disposed = true; clearTimeout(timer); revision.current++;
-      chooseSuggestion.current = () => {}; requestSuggestions.current = () => {};
-      detach(); observer.disconnect(); input.dispose(); parsed.dispose(); resized.dispose(); alternate.dispose(); scrolled.dispose();
+      chooseSuggestion.current = () => {}; requestSuggestions.current = () => {}; checkForeground.current = () => {};
+      detach(); observer.disconnect(); input.dispose(); binary.dispose(); parsed.dispose(); resized.dispose(); alternate.dispose(); scrolled.dispose();
       current.current.register(id, null); term.dispose(); termRef.current = null;
     };
   }, [props.session.id]);
@@ -255,6 +357,13 @@ export default function ShellPane(props: Props) {
       revision.current++; hide();
     } else requestSuggestions.current();
   }, [props.session.ready, props.session.alive, props.active, props.settings.showSuggestions]);
+  useEffect(() => {
+    // Only a running command can be an editor; poll cheaply while one runs.
+    checkForeground.current();
+    if (props.session.ready || !props.session.alive || !props.active) return;
+    const poll = setInterval(() => checkForeground.current(), 700);
+    return () => clearInterval(poll);
+  }, [props.session.ready, props.session.alive, props.active]);
   useEffect(() => {
     if (previousCwd.current !== props.session.cwd) {
       previousCwd.current = props.session.cwd;
@@ -277,10 +386,16 @@ export default function ShellPane(props: Props) {
           event.preventDefault();
           // Clicking fills the line; Enter remains the explicit execution step.
           chooseSuggestion.current(suggestions, index);
-        }}><Icon size={14} /><span className="suggestion-label">{item.label}</span><span className="suggestion-detail">{item.detail ?? item.kind}</span></button>;
+        }}><Icon size={14} /><span className="suggestion-label">{item.kind === 'command' || item.kind === 'history' ? <CommandText value={item.label} /> : item.label}</span><span className="suggestion-detail">{item.detail ?? item.kind}</span></button>;
       })}</div>
       <div className="suggestion-hint"><span><kbd>Tab</kbd> accept</span><span><kbd>↑</kbd><kbd>↓</kbd> choose</span>{props.settings.autoComplete && <span><kbd>↵</kbd> accept & run</span>}<span><kbd>Esc</kbd> dismiss</span></div>
     </div>}
+    {foregroundEditor && props.active && props.session.alive && <EditorBar kind={foregroundEditor} platform={props.session.platform}
+      // Float just above nano's two shortcut rows, or vim's one command line.
+      bottom={Math.round(props.settings.fontSize * 1.22 * (foregroundEditor === 'vim' ? 1 : 2)) + 18}
+      onSave={() => editorKeys(NANO_KEYS.save)}
+      onSaveAndExit={() => foregroundEditor === 'vim' ? vimCommand(VIM_KEYS.saveAndExit) : editorKeys(NANO_KEYS.saveAndExit)}
+      onExit={() => foregroundEditor === 'vim' ? vimCommand(VIM_KEYS.exit) : editorKeys(NANO_KEYS.exit)} />}
     {!props.session.alive && <div className="session-ended">Session ended. Open a new tab to continue.</div>}
   </div>;
 }

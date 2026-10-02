@@ -19,6 +19,15 @@ function directoryCommand(directory, platform = process.platform) {
   return platform === 'win32' ? `Set-Location -LiteralPath ${quoted}` : `builtin cd -- ${quoted}`;
 }
 
+// Mirrors the shapes directoryCommand() can produce, plus any other internal command the
+// app types into the shell (anything using the `builtin` prefix or naming the `__mullion`
+// hooks). The user never typed these, so they must never be learned as command history.
+const INJECTED_COMMAND_PATTERN = /^builtin\b|^set-location\s+-literalpath\b|__mullion/i;
+
+function isInjectedCommand(command) {
+  return typeof command === 'string' && INJECTED_COMMAND_PATTERN.test(command.trim());
+}
+
 function tokenize(line, platform = process.platform) {
   const tokens = [];
   let start = -1;
@@ -68,7 +77,7 @@ async function commands(prefix, environmentPath, platform, cwd) {
       }));
     } catch {}
   }));
-  return [...names].sort((a, b) => a.localeCompare(b)).slice(0, 40).map(name => ({ value: quoteToken(name, platform), label: name, kind: 'command', detail: 'Shell command' }));
+  return [...names].sort((a, b) => a.localeCompare(b)).slice(0, 40).map(name => ({ value: quoteToken(name, platform), label: name, kind: 'command', detail: 'Command' }));
 }
 
 function matches(value, prefix, platform) {
@@ -177,9 +186,9 @@ async function complete({ line, cwd, platform = process.platform, environmentPat
     const value = `${visibleDirectory || (entry.name.startsWith('-') ? `.${separator}` : '')}${entry.name}${isDirectory ? separator : ''}`;
     // A quoted tilde no longer expands in POSIX shells, so replace it with home.
     const insert = /^~[\\/]/.test(value) ? pathApi.join(home, value.slice(2).replace(/[\\/]+$/, '')) + (isDirectory ? separator : '') : value;
-    return { value: `${replacementPrefix}${quoteToken(insert, platform)}`, label: `${entry.name}${isDirectory ? separator : ''}`, kind: isDirectory ? 'directory' : 'file', detail: directory };
+    return { value: `${replacementPrefix}${quoteToken(insert, platform)}`, label: `${entry.name}${isDirectory ? separator : ''}`, kind: isDirectory ? 'directory' : 'file', detail: isDirectory ? 'Folder' : 'File' };
   }));
   return results.filter(Boolean).sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || a.label.localeCompare(b.label)).slice(0, 40);
 }
 
-module.exports = { quoteToken, directoryCommand, tokenize, complete };
+module.exports = { quoteToken, directoryCommand, tokenize, complete, isInjectedCommand };

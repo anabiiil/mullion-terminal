@@ -44,7 +44,7 @@ Mullion Terminal is a real interactive shell in a window that looks and feels li
 
 **Terminal & tabs**
 - The terminal fills the window beneath a compact titlebar; no separate "terminal" panel inside a bigger app.
-- The `+` button and `Cmd/Ctrl+T` open a new, independent tab at your home directory.
+- The `+` button and the new-tab shortcut (`Cmd+T` on macOS, `Ctrl+Shift+T` on Windows/Linux) open a new, independent tab at your home directory.
 - A compact path chip in the titlebar shows the current folder; click it to copy the absolute path.
 - The adjacent folder button opens the current directory in Finder, File Explorer or the Linux file manager.
 - An **Open folder** button lets you start or move a tab to any directory.
@@ -59,10 +59,12 @@ Mullion Terminal is a real interactive shell in a window that looks and feels li
 </p>
 
 **Directory tree**
-- A sidebar (closed by default; `Cmd/Ctrl+B` or the Files icon toggles it) shows a folder tree.
-- Clicking a folder changes directory in the same shell session, quietly — the tree doesn't "dive into" the folder, it just shows it selected in place.
+- A sidebar (closed by default; `Cmd+B` / `Ctrl+Shift+B` or the Files icon toggles it) shows a folder tree.
+- Clicking a folder (its name or the chevron) expands or collapses it — it never changes directory.
+- Double-clicking a folder changes directory in the same shell session, quietly, and makes sure it's expanded.
 - Typing `cd` in the shell selects that directory in the tree and expands its ancestors.
-- Clicking a file changes to its containing directory; double-clicking opens it with the system's default application.
+- Clicking a file selects it in the tree. Double-clicking a file opens it with `nano` in the active shell (macOS/Linux) or the system's default application (Windows) — this is never saved to command history, since it's the app opening the file, not something you typed.
+- Double-clicking a Markdown file (`.md`, `.markdown`, `.mdx`) opens a rendered preview over the terminal instead — headings, lists, tables, code blocks and images included. **Edit** switches to `nano` (or the default application on Windows), **Open externally** hands the file to the system's default app, and `Esc` or the close button returns to the shell. Web and `mailto:` links open in your browser or mail app; links to other Markdown files open in the same preview.
 
 <p align="center">
   <img src="docs/screenshots/editors.png" alt="Editor icons in the titlebar for a detected code project" width="760">
@@ -82,6 +84,16 @@ Mullion Terminal is a real interactive shell in a window that looks and feels li
 - The History sidebar lists every saved command, with search, and sorting by most-used or most-recent.
 - Pin commands to keep them at the top and in the quick-commands bar.
 - Clicking a command fills the prompt without running it.
+- Delete any single command with the trash icon next to its pin star (shown on hover, or always when the row has keyboard focus), or with Delete/Backspace while a command button is focused. Right-clicking a command in the bottom quick-commands bar opens a small menu with the same Pin/Unpin and Remove from history actions. Deleting shows a brief "Removed · Undo" toast to bring it back. This only affects Mullion's own learned history and suggestions — it never touches your shell's native history file (e.g. `~/.zsh_history`), so pressing the Up arrow in the shell still recalls your shell's own history as usual.
+- Internal navigation commands from clicking the folder tree, and files the tree opens with `nano` on a double-click, are never saved, and any already saved from an older release are purged automatically on startup.
+- Basic, routine commands — `cd`, `ls`, `rm`, `cp`, `mv`, `cat`, `nano`, `clear`, `exit`, their PowerShell equivalents, and the like — stay out of the history sidebar and quick-commands bar. They're still kept in history to improve suggestions while typing, except `cd`/`pushd`/`popd` and their PowerShell equivalents, which are never offered as a learned suggestion (folder-name completion right after typing `cd ` is unaffected — it reads the current directory live, not history).
+- A command the shell reports as "command not found" is never learned.
+
+**Editing files with nano and vim**
+- Running `nano` or `pico` gets mouse support automatically: click anywhere in the buffer to place the cursor, and scroll with the mouse wheel to move around a long file. Option/Alt+drag still selects text to copy; nano's own mark (`Ctrl+^`) selects text to cut instead.
+- A small **Save / Save & Exit / Exit** bar appears at the bottom-right of the window while nano/pico is running, alongside `Cmd+S` / `Ctrl+S` to save without leaving the keyboard.
+- Opt out with the environment variable `MULLION_EDITOR_MOUSE=0`; your own `nano`/`pico` alias or shell function always takes precedence.
+- `vim`, `vi` and `nvim` get their own bar with **Save & Close** (`:wq`) and **Close** (`:qa!`) — handy for the commit/rebase/merge message editor that `git pull`, `git commit` and `git rebase` open, so you're not stuck typing `:qa!` to get out of one. `Cmd+S` / `Ctrl+S` saves (`:w`) without closing.
 
 <p align="center">
   <img src="docs/screenshots/settings.png" alt="The Settings panel" width="420">
@@ -127,6 +139,16 @@ The installer isn't signed, so Windows SmartScreen may show **Windows protected 
   sudo apt install ./Mullion-Terminal-*-linux-amd64.deb
   ```
 
+## Open with Mullion Terminal
+
+Right-clicking a file or folder can open it straight into Mullion Terminal: a folder opens a new tab there, and a file opens a new tab in its parent folder with the file opened the same way double-clicking it in the sidebar does (Markdown in the preview, everything else in `nano`). Dropping a file or folder on the app also works. Mullion Terminal never becomes the default app for anything — it only ever appears as an extra option.
+
+- **macOS:** right-click any file or folder in Finder and choose **Quick Actions ▸ Open in Mullion Terminal** (also under **Services**). This works for every file and folder, whatever its type; the app installs it for the current user at `~/Library/Services` on launch, and you can turn it off in Settings. **Open With ▸ Mullion Terminal** is also offered for text and source files (plain text, Markdown, JSON, YAML, XML, HTML, CSS, logs, shell/Python/PHP/JavaScript scripts, C/C++/Swift sources, Makefiles) and for folders — the app claims those specific types rather than every file, since Finder hides apps that claim everything from **Open With**. Dropping a file or folder on the Dock icon always works too.
+- **Windows:** right-click a file, or a folder, or empty space inside a folder, and choose **Open with Mullion Terminal** — the installer adds this to the right-click menu for the current user.
+- **Linux:** most file managers show **Open With ▸ Mullion Terminal** for any file, including from the AppImage, once it's been run at least once.
+
+You can also open a specific path from the command line, e.g. `mullion-terminal ~/code/project`.
+
 ## Quick start
 
 ```sh
@@ -136,9 +158,9 @@ npm run dev
 
 `npm run dev` starts the desktop app with its Vite development server. The app opens with one tab already running at your home directory.
 
-- `Cmd/Ctrl+T` — open a new tab at Home
-- `Cmd/Ctrl+B` — toggle the Files sidebar
-- Click a folder in the sidebar to change into it, or type `cd` in the shell to select it there
+- `Cmd+T` (macOS) / `Ctrl+Shift+T` (Windows/Linux) — open a new tab at Home
+- `Cmd+B` (macOS) / `Ctrl+Shift+B` (Windows/Linux) — toggle the Files sidebar
+- Double-click a folder in the sidebar to change into it (single-click just expands it), or type `cd` in the shell to select it there
 - Start typing a command to see suggestions; `Tab` accepts, `Enter` runs
 
 ## Suggestions & auto-complete
@@ -158,24 +180,25 @@ Toggle **Auto-complete** in Settings to switch between two modes:
 | `Esc` | Dismiss the suggestion list | Dismiss the inline suggestion |
 | Empty history, filesystem commands (`cd`, `rm`, `ls`, `cat`, `cp`, `mv`, …) | Waits for a filename prefix before suggesting operands | Suggests files or folders from the current directory immediately, even with nothing typed yet |
 
-In both modes, suggestions blend your command history (ranked by frequency and recency, with pinned and current-directory commands first) with filesystem paths and shell commands.
+In both modes, suggestions blend your command history (ranked by frequency and recency, with pinned and current-directory commands first) with filesystem paths and shell commands. `cd`, `pushd`, `popd` and their PowerShell equivalents are never suggested from history — folder-name completion after typing `cd ` still works, from the live directory listing rather than something you ran before.
 
 ## Keyboard shortcuts
 
 | Action | macOS | Windows / Linux |
 | --- | --- | --- |
-| New terminal tab | `Cmd+T` / `Ctrl+T` | `Ctrl+T` |
-| Close active tab | `Cmd+W` / `Ctrl+W` | `Ctrl+W` |
-| Toggle Files sidebar | `Cmd+B` / `Ctrl+B` | `Ctrl+B` |
+| New terminal tab | `Cmd+T` | `Ctrl+Shift+T` |
+| Close active tab | `Cmd+W` | `Ctrl+Shift+W` |
+| Toggle Files sidebar | `Cmd+B` | `Ctrl+Shift+B` |
 | Settings | `Cmd+,` / `Ctrl+,` | `Ctrl+,` |
-| Copy selected terminal text | `Cmd+C` / `Ctrl+C` | `Ctrl+C` / `Ctrl+Shift+C` |
-| Paste | `Cmd+V` / `Ctrl+V` / `Ctrl+Shift+V` | `Ctrl+V` / `Ctrl+Shift+V` |
+| Copy selected terminal text | `Cmd+C` / `Ctrl+C` (with a selection) · `Ctrl+Shift+C` (always) | `Ctrl+C` (with a selection) · `Ctrl+Shift+C` (always) |
+| Paste | `Cmd+V` (always) · `Ctrl+V` (at the shell prompt) · `Ctrl+Shift+V` (always) | `Ctrl+V` (at the shell prompt) · `Ctrl+Shift+V` (always) |
+| Save (nano/pico/vim in the foreground) | `Cmd+S` / `Ctrl+S` | `Ctrl+S` |
 | Clear terminal scrollback | `Cmd+K` / `Ctrl+Shift+K` | `Ctrl+Shift+K` |
 | Accept suggestion | `Tab` | `Tab` |
 | Dismiss suggestions | `Escape` | `Escape` |
 | Shell history, with suggestions closed | `↑` / `↓` | `↑` / `↓` |
 
-`Ctrl+C` keeps the shell's normal interrupt behavior when nothing is selected — it only copies when there's a selection. Ctrl shortcuts work on every platform, including macOS; `Ctrl+A`, `Ctrl+E`, `Ctrl+U` and unshifted `Ctrl+K` keep their normal shell-editing behavior (readline/ZLE), rather than being captured by the app.
+Plain `Ctrl+T`, `Ctrl+W` and `Ctrl+B` are left for the shell and full-screen editors (e.g. readline/ZLE word navigation, nano's own bindings) — on Windows and Linux the app's own tab and sidebar shortcuts use `Ctrl+Shift` instead. `Ctrl+C` keeps the shell's normal interrupt behavior when nothing is selected — it only copies when there's a selection (including inside nano/vim). `Ctrl+V` pastes at an idle shell prompt, but a full-screen program like nano or vim receives it unchanged (nano: next page, vim: visual block); `Cmd+V` and `Ctrl+Shift+V` always paste. Ctrl shortcuts work on every platform, including macOS; `Ctrl+A`, `Ctrl+E`, `Ctrl+U` and unshifted `Ctrl+K` keep their normal shell-editing behavior (readline/ZLE), rather than being captured by the app.
 
 ## Editors & IDEs
 
@@ -226,6 +249,9 @@ Check that **Suggestions while typing** is on in Settings. The popup or inline h
 **Which shells are supported?**
 zsh or bash on macOS and Linux, and PowerShell 7 (or Windows PowerShell as a fallback) on Windows. Shell integration is loaded through temporary configuration files — the app doesn't modify your shell profiles. Fish and `cmd.exe` aren't supported by the current prompt integration.
 
+**Homebrew, `sudo` or my PATH behave differently than in my usual terminal.**
+They shouldn't — each tab starts your shell the way Terminal.app does. On macOS, zsh runs as a login shell (`/etc/zprofile` with `path_helper`, then your `.zshenv`, `.zprofile`, `.zshrc` and `.zlogin`), and bash reads `/etc/profile` and the first of `~/.bash_profile`, `~/.bash_login` or `~/.profile`, so `eval "$(/opt/homebrew/bin/brew shellenv)"` and `/etc/paths.d` entries work even when the app is opened from Finder or the Dock. If no locale is set, `LANG` defaults to a UTF-8 locale for your macOS region (falling back to `en_US.UTF-8`). The app's own internal variables are never passed to the shell, while session variables such as `SSH_AUTH_SOCK` are. `sudo` prompts on a real terminal device; what you type at a password prompt is never shown as a suggestion or saved to history. On Windows, PowerShell loads your profiles and inherits the PATH the app was started with — if you just installed something with winget, Scoop or Chocolatey, restart the app so new tabs pick up the updated PATH. Tabs set `TERM_PROGRAM=Mullion-Terminal`.
+
 ## Building from source
 
 Requires Node.js 24 and npm. Building the native `node-pty` dependency may need Xcode Command Line Tools on macOS, Visual Studio C++ Build Tools on Windows, or Python and a C++ toolchain on Linux.
@@ -252,7 +278,7 @@ Pushing a tag of the form `vX.Y.Z` triggers the GitHub Actions workflow, which b
 
 ## استخدام سريع
 
-شغّل `npm run dev` لفتح التطبيق. التيرمنال بيملأ النافذة، وأزرار المسار والمجلدات والمحررات والإعدادات في الشريط العلوي. الـ sidebar مقفولة افتراضيًا؛ افتحها من أيقونة الملفات أو سجل الأوامر. الضغط على فولدر يغير المجلد بهدوء داخل نفس جلسة الـ shell، و`cd` يحدد المجلد مكانه في الشجرة. زرار `+` يفتح تاب جديدة في الـ Home. لو Auto-complete شغّال بيظهر بوكس اقتراحات وEnter يختار وينفّذ؛ لو مقفول بتظهر تكملة خفيفة في نفس السطر، Tab يقبلها وEnter ينفّذ اللي كتبته. أيقونات المحررات بتظهر حسب ملفات المشروع الحالي، والأوامر الأكثر استخدامًا موجودة في سطر صغير جوّه التيرمنال من تحت خالص. الضغط على أي أمر بيكتبه في سطر الأوامر من غير تنفيذ.
+شغّل `npm run dev` لفتح التطبيق. التيرمنال بيملأ النافذة، وأزرار المسار والمجلدات والمحررات والإعدادات في الشريط العلوي. الـ sidebar مقفولة افتراضيًا؛ افتحها من أيقونة الملفات أو سجل الأوامر. الضغطة الواحدة على فولدر بتفتح/تقفل الشجرة من غير ما تغيّر المكان، والدبل كليك عليه يغيّر المجلد بهدوء داخل نفس جلسة الـ shell، و`cd` يحدد المجلد مكانه في الشجرة. الدبل كليك على ملف يفتحه للتعديل بـ nano جوه التيرمنال. زرار `+` يفتح تاب جديدة في الـ Home. لو Auto-complete شغّال بيظهر بوكس اقتراحات وEnter يختار وينفّذ؛ لو مقفول بتظهر تكملة خفيفة في نفس السطر، Tab يقبلها وEnter ينفّذ اللي كتبته. أيقونات المحررات بتظهر حسب ملفات المشروع الحالي، والأوامر الأكثر استخدامًا موجودة في سطر صغير جوّه التيرمنال من تحت خالص. الضغط على أي أمر بيكتبه في سطر الأوامر من غير تنفيذ.
 
 ## Related
 

@@ -64,14 +64,60 @@ function findExecutable(name, environmentPath = process.env.PATH ?? '', platform
   return null;
 }
 
-function defaultEnvironment(home = os.homedir()) {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([, value]) => typeof value === 'string'));
+// Variables that describe this app process rather than the user's session:
+// Electron's own switches, launchd's per-app XPC service and Electron's
+// Info.plist malloc override (macOS), Electron's desktop overrides and the
+// AppImage runtime (Linux), and the identity/nesting of whichever terminal
+// started a development build. A system terminal never passes these on.
+const APP_ENVIRONMENT = new Set(['TERMINAL_DEV_URL', 'XPC_SERVICE_NAME', 'XPC_FLAGS', 'MALLOCNANOZONE', 'CHROME_DESKTOP', 'ORIGINAL_XDG_CURRENT_DESKTOP', 'APPIMAGE', 'APPDIR', 'OWD', 'ARGV0', 'TERM_PROGRAM_VERSION', 'TERM_SESSION_ID', 'ITERM_SESSION_ID', 'ITERM_PROFILE', 'LC_TERMINAL', 'LC_TERMINAL_VERSION', 'WT_SESSION', 'WT_PROFILE_ID', 'SHLVL', 'PWD', 'OLDPWD', '_']);
+const APP_ENVIRONMENT_PREFIXES = ['ELECTRON_', 'VSCODE_'];
+let cachedSystemLocale;
+
+function appVersion() {
+  try { return require('../package.json').version || ''; } catch { return ''; }
+}
+
+function systemLocale(platform = process.platform) {
+  if (cachedSystemLocale !== undefined) return cachedSystemLocale;
+  cachedSystemLocale = '';
+  try {
+    if (platform === 'darwin') cachedSystemLocale = require('node:child_process').execFileSync('/usr/bin/defaults', ['read', '-g', 'AppleLocale'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    else cachedSystemLocale = Intl.DateTimeFormat().resolvedOptions().locale || '';
+  } catch { /* Fall back to en_US.UTF-8 below. */ }
+  return cachedSystemLocale;
+}
+
+function localeExists(name, platform = process.platform) {
+  // macOS ships one directory per locale; Linux falls back to C.UTF-8.
+  if (platform !== 'darwin') return false;
+  try { return fsSync.statSync(path.join('/usr/share/locale', name)).isDirectory(); } catch { return false; }
+}
+
+// Terminal.app sets LANG from the macOS region ("Set locale environment
+// variables on startup"); apps opened from Finder get no LANG at all, which
+// leaves the C locale and breaks UTF-8 in many tools. Only fill a gap.
+function utf8Locale(env, { platform = process.platform, locale, exists = name => localeExists(name, platform) } = {}) {
+  if (platform === 'win32' || env.LC_ALL || env.LC_CTYPE || env.LANG) return null;
+  const match = /^([a-z]{2,3})(?:[-_][A-Z][a-z]{3})?[-_]([A-Z]{2})\b/.exec(String(locale ?? systemLocale(platform)));
+  const candidates = match ? [`${match[1]}_${match[2]}.UTF-8`, `${match[1]}_${match[1].toUpperCase()}.UTF-8`] : [];
+  if (platform === 'darwin') return candidates.find(exists) || 'en_US.UTF-8';
+  return 'C.UTF-8';
+}
+
+function defaultEnvironment(home = os.homedir(), source = process.env, platform = process.platform) {
+  const env = Object.fromEntries(Object.entries(source).filter(([name, value]) => {
+    const upper = name.toUpperCase();
+    return typeof value === 'string' && !APP_ENVIRONMENT.has(upper) && !APP_ENVIRONMENT_PREFIXES.some(prefix => upper.startsWith(prefix));
+  }));
+  if (platform === 'linux' && source.ORIGINAL_XDG_CURRENT_DESKTOP) env.XDG_CURRENT_DESKTOP = source.ORIGINAL_XDG_CURRENT_DESKTOP;
   env.TERM = 'xterm-256color';
   env.COLORTERM = 'truecolor';
   env.TERM_PROGRAM = 'Mullion-Terminal';
-  delete env.ELECTRON_RUN_AS_NODE;
-  delete env.TERMINAL_DEV_URL;
-  if (process.platform !== 'win32') {
+  const version = appVersion();
+  if (version) env.TERM_PROGRAM_VERSION = version;
+  const lang = utf8Locale(env, { platform });
+  if (lang) env.LANG = lang;
+  if (platform !== 'win32') {
     const common = [path.join(home, '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
     env.PATH = [...new Set([...(env.PATH ?? '').split(':').filter(Boolean), ...common.filter(executableDirectory)])].join(':');
   }
@@ -95,8 +141,121 @@ function selectShell(env = process.env, platform = process.platform) {
   return (platform === 'darwin' && executable('/bin/zsh')) ? '/bin/zsh' : executable('/bin/bash') ? '/bin/bash' : findExecutable('bash', env.PATH, platform);
 }
 
+// Mouse support for nano/pico inside this terminal only: a click places the
+// cursor. User aliases/functions win, and MULLION_EDITOR_MOUSE=0 opts out.
+// UW pico (macOS's nano) enables xterm mouse tracking only when DISPLAY is set.
+function editorWrappers(shell) {
+  const defined = name => shell === 'zsh'
+    ? `(( \x24{+aliases[${name}]} || \x24{+functions[${name}]} ))`
+    : `{ alias ${name} >/dev/null 2>&1 || declare -F ${name} >/dev/null; }`;
+  return `
+__mullion_editor_mouse() {
+  local __mullion_editor="$1" __mullion_path
+  shift
+  if [[ "\x24{MULLION_EDITOR_MOUSE:-1}" == 0 ]]; then command "$__mullion_editor" "$@"; return; fi
+  __mullion_path="$(${shell === 'zsh' ? 'whence -p' : 'type -P'} -- "$__mullion_editor" 2>/dev/null)"
+  if [[ "$__mullion_editor" == pico || "\x24{__mullion_path##*/}" == pico || ( -L "$__mullion_path" && "$(command readlink -- "$__mullion_path" 2>/dev/null)" == *pico ) ]]; then
+    DISPLAY="\x24{DISPLAY:-:0}" command "$__mullion_editor" -m "$@"
+  else
+    command "$__mullion_editor" -m "$@"
+  fi
+}
+if ! ${defined('nano')}; then function nano { __mullion_editor_mouse nano "$@"; }; fi
+if ! ${defined('pico')}; then function pico { __mullion_editor_mouse pico "$@"; }; fi
+`;
+}
+
+// Colors option-looking words (-la, --force, --) while typing at the zsh prompt.
+// An installed syntax highlighter always wins, and MULLION_HIGHLIGHT=0 opts out.
+// zsh 5.9 tags entries with memo=mullion; older versions remember what was added
+// so entries from the user's own widgets are never removed.
+function flagHighlighter() {
+  const others = '(( \x24{+ZSH_HIGHLIGHT_VERSION} + \x24{+FAST_HIGHLIGHT} + \x24{+functions[_zsh_highlight]} + \x24{+functions[fast-highlight-process]} ))';
+  const add = (start, end) => `__mullion_added+=("$(( ${start} )) $(( ${end} )) $__mullion_highlight_face\x24{__mullion_highlight_memo:+ memo=mullion}")`;
+  return `
+typeset -g __mullion_highlight_face __mullion_highlight_memo
+typeset -ga __mullion_highlight_entries
+__mullion_highlight() {
+  emulate -L zsh
+  if [[ -n $__mullion_highlight_memo ]]; then
+    region_highlight=("\x24{(@)region_highlight:#*memo=mullion*}")
+  else
+    local __mullion_entry
+    for __mullion_entry in "\x24{(@)__mullion_highlight_entries}"; do
+      region_highlight=("\x24{(@)region_highlight:#\x24{__mullion_entry}}")
+    done
+  fi
+  __mullion_highlight_entries=()
+  [[ -n $__mullion_highlight_face && "\x24{MULLION_HIGHLIGHT:-1}" != 0 ]] || return 0
+  ${others} && return 0
+  local __mullion_buffer="$BUFFER" __mullion_char __mullion_quote=''
+  integer __mullion_i __mullion_start=0 __mullion_boundary=1 __mullion_length=\x24{#BUFFER}
+  local -a __mullion_added
+  # Keypresses stay fast on huge pasted buffers.
+  (( __mullion_length > 4096 )) && return 0
+  for (( __mullion_i = 1; __mullion_i <= __mullion_length; __mullion_i++ )); do
+    __mullion_char="\x24{__mullion_buffer[__mullion_i]}"
+    if [[ -n $__mullion_quote ]]; then
+      if [[ "$__mullion_char" == "$__mullion_quote" ]]; then __mullion_quote=''
+      elif [[ $__mullion_quote == '"' && "$__mullion_char" == '\\' ]]; then (( __mullion_i++ ))
+      fi
+    elif [[ "$__mullion_char" == [[:space:]] || ';|(' == *"$__mullion_char"* ]]; then
+      if (( __mullion_start )); then
+        ${add('__mullion_start - 1', '__mullion_i - 1')}
+        __mullion_start=0
+      fi
+      __mullion_boundary=1
+    elif [[ "$__mullion_char" == "'" || "$__mullion_char" == '"' ]]; then
+      __mullion_quote="$__mullion_char"
+      __mullion_boundary=0
+    elif [[ "$__mullion_char" == '\\' ]]; then
+      (( __mullion_i++ ))
+      __mullion_boundary=0
+    elif (( __mullion_boundary )) && [[ "$__mullion_char" == - ]]; then
+      (( __mullion_start = __mullion_i ))
+      __mullion_boundary=0
+    else
+      __mullion_boundary=0
+    fi
+  done
+  if (( __mullion_start )); then
+    ${add('__mullion_start - 1', '__mullion_length')}
+  fi
+  (( \x24{#__mullion_added} )) || return 0
+  region_highlight+=("\x24{(@)__mullion_added}")
+  # Store entries as zsh reports them back, in case it normalizes the text.
+  [[ -n $__mullion_highlight_memo ]] || __mullion_highlight_entries=("\x24{(@)region_highlight[-\x24{#__mullion_added},-1]}")
+  return 0
+}
+__mullion_highlight_setup() {
+  emulate -L zsh
+  # add-zle-hook-widget arrived in zsh 5.3; +X fails where it does not exist.
+  # This runs from both .zshrc and .zlogin, so it may already be loaded.
+  (( \x24{+functions[add-zle-hook-widget]} )) || autoload -Uz +X add-zle-hook-widget 2>/dev/null || return 0
+  (( \x24{+functions[add-zle-hook-widget]} )) || return 0
+  add-zle-hook-widget -d line-pre-redraw __mullion_highlight 2>/dev/null
+  [[ "\x24{MULLION_HIGHLIGHT:-1}" == 0 ]] && return 0
+  ${others} && return 0
+  local -a __mullion_version
+  __mullion_version=(\x24{(s:.:)ZSH_VERSION})
+  integer __mullion_major="\x24{__mullion_version[1]%%[^0-9]*}" __mullion_minor="\x24{__mullion_version[2]%%[^0-9]*}"
+  # Truecolor faces need zsh 5.7; memo= tags need zsh 5.9.
+  if (( __mullion_major > 5 || (__mullion_major == 5 && __mullion_minor >= 7) )); then __mullion_highlight_face='fg=#2f81f7'
+  else __mullion_highlight_face='fg=33'
+  fi
+  if (( __mullion_major > 5 || (__mullion_major == 5 && __mullion_minor >= 9) )); then __mullion_highlight_memo=1
+  else __mullion_highlight_memo=''
+  fi
+  add-zle-hook-widget line-pre-redraw __mullion_highlight 2>/dev/null
+}
+__mullion_highlight_setup 2>/dev/null
+`;
+}
+
 function unixHooks(nonce, shell, navigationFile) {
-  const ready = `printf '\\033]777;Mullion;${nonce};ready;%s;%s;%s\\007' "$(printf '%s' "$PWD" | command base64 | command tr -d '\\r\\n')" "$(printf '%s' "$PATH" | command base64 | command tr -d '\\r\\n')" "$__mullion_navigation_available"`;
+  // $__mullion_status is captured as the very first statement of __mullion_ready, below,
+  // before anything else (including this printf's own command substitutions) can touch $?.
+  const ready = `printf '\\033]777;Mullion;${nonce};ready;%s;%s;%s;%s\\007' "$(printf '%s' "$PWD" | command base64 | command tr -d '\\r\\n')" "$(printf '%s' "$PATH" | command base64 | command tr -d '\\r\\n')" "$__mullion_navigation_available" "$__mullion_status"`;
   const busy = `printf '\\033]777;Mullion;${nonce};busy\\007'`;
   const record = `printf '\\033]777;Mullion;${nonce};command;%s\\007' "$(printf '%s' "$__mullion_line" | command base64 | command tr -d '\\r\\n')"`;
   if (shell === 'zsh') return `
@@ -113,8 +272,7 @@ add-zsh-hook -d precmd __mullion_ready 2>/dev/null
 add-zsh-hook -d preexec __mullion_busy 2>/dev/null
 add-zsh-hook precmd __mullion_ready
 add-zsh-hook preexec __mullion_busy
-${navigationFile ? unixNavigation(nonce, shell, navigationFile) : ''}
-`;
+${navigationFile ? unixNavigation(nonce, shell, navigationFile) : ''}${editorWrappers(shell)}${flagHighlighter()}`;
   return `
 __mullion_command() {
   local __mullion_line
@@ -166,8 +324,7 @@ if declare -p PROMPT_COMMAND 2>/dev/null | command grep -q 'declare -a'; then
 else
   PROMPT_COMMAND="\x24{PROMPT_COMMAND:+\x24PROMPT_COMMAND; }__mullion_ready"
 fi
-${navigationFile ? unixNavigation(nonce, shell, navigationFile) : ''}
-`;
+${navigationFile ? unixNavigation(nonce, shell, navigationFile) : ''}${editorWrappers(shell)}`;
 }
 
 async function prepareShell({ directory, nonce, home = os.homedir(), env = defaultEnvironment(home), shell = selectShell(env), platform = process.platform }) {
@@ -232,6 +389,13 @@ try {
 } catch {
   # PowerShell remains usable on installations without the optional module.
 }
+# Match the zsh flag color, unless the user already chose their own Parameter
+# color (PSReadLine's shipped default is DarkGray, ESC[90m).
+try {
+  if ((Get-PSReadLineOption).ParameterColor -eq "$([char]0x1b)[90m") {
+    Set-PSReadLineOption -Colors @{ Parameter = "$([char]0x1b)[38;2;47;129;247m" } -ErrorAction Stop
+  }
+} catch { }
 $global:__mullion_historyId = (Get-History -Count 1).Id
 $global:__mullion_firstPrompt = $true
 function global:prompt {
@@ -263,4 +427,4 @@ function global:prompt {
   throw new Error('Unsupported shell. Use zsh, bash, or PowerShell.');
 }
 
-module.exports = { defaultEnvironment, selectShell, prepareShell, unixHooks, findExecutable, NAVIGATION_SEQUENCE, navigationRequest };
+module.exports = { defaultEnvironment, utf8Locale, selectShell, prepareShell, unixHooks, editorWrappers, flagHighlighter, findExecutable, NAVIGATION_SEQUENCE, navigationRequest };
