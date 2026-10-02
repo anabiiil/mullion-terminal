@@ -51,7 +51,7 @@ Mullion Terminal is a real interactive shell in a window that looks and feels li
 
 **Suggestions & auto-complete**
 - Suggestions combine shell commands, filesystem paths, and commands you've previously run in this app.
-- A slim row along the terminal's bottom edge keeps your most-used and pinned commands within reach, even before you've built any history.
+- A slim "Most used" row along the terminal's bottom edge keeps your most-used and pinned commands within reach, even before you've built any history.
 - With **auto-complete on**, a suggestion list appears near the prompt; with it **off**, the best match appears as faint inline ghost text instead. See [Suggestions & auto-complete](#suggestions--auto-complete) below.
 
 <p align="center">
@@ -87,7 +87,7 @@ Mullion Terminal is a real interactive shell in a window that looks and feels li
 - Delete any single command with the trash icon next to its pin star (shown on hover, or always when the row has keyboard focus), or with Delete/Backspace while a command button is focused. Right-clicking a command in the bottom quick-commands bar opens a small menu with the same Pin/Unpin and Remove from history actions. Deleting shows a brief "Removed · Undo" toast to bring it back. This only affects Mullion's own learned history and suggestions — it never touches your shell's native history file (e.g. `~/.zsh_history`), so pressing the Up arrow in the shell still recalls your shell's own history as usual.
 - Internal navigation commands from clicking the folder tree, and files the tree opens with `nano` on a double-click, are never saved, and any already saved from an older release are purged automatically on startup.
 - Basic, routine commands — `cd`, `ls`, `rm`, `cp`, `mv`, `cat`, `nano`, `clear`, `exit`, their PowerShell equivalents, and the like — stay out of the history sidebar and quick-commands bar. They're still kept in history to improve suggestions while typing, except `cd`/`pushd`/`popd` and their PowerShell equivalents, which are never offered as a learned suggestion (folder-name completion right after typing `cd ` is unaffected — it reads the current directory live, not history).
-- A command the shell reports as "command not found" is never learned.
+- A command that fails the first time you run it — a typo like `git psuh` or `brew upgrde`, or one the shell reports as "command not found" or "permission denied" — is never learned as a new entry. Once a command has succeeded at least once, a later failed run still updates its use count and last-used time, so it doesn't drop out of your history. Stopping a long-running command on purpose (`Ctrl+C`, or closing its process) still counts as learned, same as a normal exit.
 
 **Editing files with nano and vim**
 - Running `nano` or `pico` gets mouse support automatically: click anywhere in the buffer to place the cursor, and scroll with the mouse wheel to move around a long file. Option/Alt+drag still selects text to copy; nano's own mark (`Ctrl+^`) selects text to cut instead.
@@ -115,7 +115,7 @@ Download `Mullion-Terminal-<version>-mac-arm64.dmg` (Apple Silicon), open it, an
 
 The app isn't code-signed or notarized, so the first launch needs one extra step. Either:
 
-- Right-click (or Control-click) **Mullion Terminal** in Applications and choose **Open**, then confirm in the dialog that appears, or
+- Open it once; when macOS says it can't verify the app, click **Done**, then go to **System Settings › Privacy & Security** and click **Open Anyway** (on older macOS versions, right-click the app in Applications and choose **Open** instead), or
 - Clear the quarantine flag from a terminal:
   ```sh
   xattr -dr com.apple.quarantine "/Applications/Mullion Terminal.app"
@@ -232,7 +232,7 @@ Settings and up to 1,000 saved commands are stored locally in `preferences.json`
 ## FAQ & troubleshooting
 
 **macOS says the app is damaged or can't be opened.**
-The app isn't notarized. Right-click it in Applications and choose **Open** once, or run `xattr -dr com.apple.quarantine "/Applications/Mullion Terminal.app"` in a terminal.
+The app isn't notarized. Builds before 0.1.6 had an incomplete signature that macOS reports as "damaged" — update to the latest release. For the usual first-launch prompt, use **System Settings › Privacy & Security › Open Anyway**, or run `xattr -dr com.apple.quarantine "/Applications/Mullion Terminal.app"` in a terminal.
 
 **Windows SmartScreen blocks the installer.**
 The installer isn't signed. Click **More info**, then **Run anyway**.

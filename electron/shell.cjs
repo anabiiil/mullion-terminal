@@ -253,25 +253,41 @@ __mullion_highlight_setup 2>/dev/null
 }
 
 function unixHooks(nonce, shell, navigationFile) {
-  // $__mullion_status is captured as the very first statement of __mullion_ready, below,
-  // before anything else (including this printf's own command substitutions) can touch $?.
+  // $__mullion_status is read from $__mullion_last_status, captured by a dedicated hook
+  // (see below) rather than $? directly: a prompt theme's own precmd/PROMPT_COMMAND hooks
+  // can run one of our hooks' command substitutions or its own commands first and clobber $?
+  // before we'd otherwise get to read it.
   const ready = `printf '\\033]777;Mullion;${nonce};ready;%s;%s;%s;%s\\007' "$(printf '%s' "$PWD" | command base64 | command tr -d '\\r\\n')" "$(printf '%s' "$PATH" | command base64 | command tr -d '\\r\\n')" "$__mullion_navigation_available" "$__mullion_status"`;
   const busy = `printf '\\033]777;Mullion;${nonce};busy\\007'`;
   const record = `printf '\\033]777;Mullion;${nonce};command;%s\\007' "$(printf '%s' "$__mullion_line" | command base64 | command tr -d '\\r\\n')"`;
   if (shell === 'zsh') return `
+__mullion_last_status=0
+__mullion_capture_status() { __mullion_last_status=$?; }
+# A prompt theme's own precmd hook (pure, starship, powerlevel10k, …) is registered with
+# add-zsh-hook too, which appends: since ours is set up after the user's .zshrc has already
+# run, a plain \x24{precmd_functions[@]} ordering would leave theirs running (and potentially
+# changing $?) before ours ever sees it. Keeping our capture at index 1 guarantees it runs
+# before any other precmd function, theirs included, so it reads the real, unclobbered $?.
+# Some themes rebuild precmd_functions on every prompt, so this is re-asserted in preexec too.
+__mullion_ensure_capture() {
+  if [[ "\x24{precmd_functions[1]}" != __mullion_capture_status ]]; then
+    precmd_functions=(__mullion_capture_status "\x24{(@)precmd_functions:#__mullion_capture_status}")
+  fi
+}
 __mullion_ready() {
-  local __mullion_status=$?
+  local __mullion_status=$__mullion_last_status
   PROMPT='%F{cyan}%1~%f %F{yellow}❯%f '
   RPROMPT=''
   ${ready}
   return $__mullion_status
 }
-__mullion_busy() { local __mullion_line="$1"; ${record}; ${busy}; }
+__mullion_busy() { local __mullion_line="$1"; __mullion_ensure_capture; ${record}; ${busy}; }
 autoload -Uz add-zsh-hook
 add-zsh-hook -d precmd __mullion_ready 2>/dev/null
 add-zsh-hook -d preexec __mullion_busy 2>/dev/null
 add-zsh-hook precmd __mullion_ready
 add-zsh-hook preexec __mullion_busy
+__mullion_ensure_capture
 ${navigationFile ? unixNavigation(nonce, shell, navigationFile) : ''}${editorWrappers(shell)}${flagHighlighter()}`;
   return `
 __mullion_command() {
@@ -288,9 +304,11 @@ __mullion_first_prompt=1
 __mullion_histcmd=$HISTCMD
 __mullion_legacy_readline=0
 __mullion_readline_echo=0
+__mullion_last_status=0
+__mullion_capture_status() { __mullion_last_status=$?; }
 (( BASH_VERSINFO[0] == 3 )) && __mullion_legacy_readline=1
 __mullion_ready() {
-  local __mullion_status=$?
+  local __mullion_status=$__mullion_last_status
   if [[ $__mullion_legacy_readline == 1 && "$1" != navigation ]]; then
     local __mullion_terminal_flags
     if __mullion_terminal_flags="$(command stty -a 2>/dev/null)"; then
@@ -318,11 +336,13 @@ if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )
 else
   __mullion_legacy_history=1
 fi
-# Append instead of replacing PROMPT_COMMAND; preserve user integrations.
+# __mullion_capture_status must run before the user's own PROMPT_COMMAND entries (a prompt
+# theme's own PROMPT_COMMAND hook can run commands that change $? before we'd otherwise see
+# it), so it goes at the front rather than being appended like __mullion_ready.
 if declare -p PROMPT_COMMAND 2>/dev/null | command grep -q 'declare -a'; then
-  PROMPT_COMMAND+=(__mullion_ready)
+  PROMPT_COMMAND=(__mullion_capture_status "\x24{PROMPT_COMMAND[@]}" __mullion_ready)
 else
-  PROMPT_COMMAND="\x24{PROMPT_COMMAND:+\x24PROMPT_COMMAND; }__mullion_ready"
+  PROMPT_COMMAND="__mullion_capture_status; \x24{PROMPT_COMMAND:+\x24PROMPT_COMMAND; }__mullion_ready"
 fi
 ${navigationFile ? unixNavigation(nonce, shell, navigationFile) : ''}${editorWrappers(shell)}`;
 }

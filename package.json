@@ -1,6 +1,6 @@
 {
   "name": "mullion-terminal",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "A standalone terminal with Mullion's familiar look, local command learning and a directory sidebar.",
   "author": {
     "name": "Abdelrahman Nabil",
@@ -55,6 +55,7 @@
     "vite": "^7.1.0"
   },
   "build": {
+    "afterPack": "build/after-pack.cjs",
     "appId": "dev.mullion.terminal",
     "productName": "Mullion Terminal",
     "electronDist": "node_modules/electron/dist",

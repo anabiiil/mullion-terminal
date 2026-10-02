@@ -38,8 +38,16 @@ class SubmissionTracker {
   }
 
   // `status` is the POSIX exit code of the command that just finished, when the
-  // shell integration could report one. 127 is the shell's own "command not
-  // found" — never worth learning.
+  // shell integration could report one. 127 ("command not found") and 126 ("not
+  // executable") are the shell's own verdict that nothing ran — never worth learning.
+  // Ctrl+C (130) and SIGTERM (143) are treated like success: a long-running dev
+  // server stopped on purpose was still a command worth learning. Any other
+  // non-zero status means the command ran and failed on its own terms — it may
+  // still update an entry that has succeeded before (so a flaky command keeps its
+  // place in history), but it must never create a brand-new entry for a command
+  // that has never once worked (a typo like `git psuh` isn't "learned").
+  // An unknown status (e.g. PowerShell, or no shell integration) keeps the
+  // original behavior: always record.
   finish(status) {
     if (this.resolved) return;
     const command = this.hooked ?? this.pending;
@@ -49,8 +57,9 @@ class SubmissionTracker {
     // A shell hook can report an app-injected command (e.g. sidebar navigation's
     // `builtin cd -- …`) just like any other executed line. It must never be learned.
     if (isInjectedCommand(command)) return;
-    if (status === 127) return;
-    this.record(command);
+    if (status === 127 || status === 126) return;
+    const successLike = status === undefined || status === 0 || status === 130 || status === 143;
+    this.record(command, successLike ? {} : { onlyIfExists: true });
   }
 }
 

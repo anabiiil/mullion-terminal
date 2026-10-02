@@ -259,3 +259,7 @@ kbd { font-size:9px; border:1px solid var(--border); border-radius:4px; padding:
 .undo-toast code { font-family:var(--mono); background:var(--inset); border-radius:5px; padding:.12em .38em; }
 .undo-toast>button { flex:none; font-weight:600; color:var(--accent-text); padding:4px 8px; border-radius:6px; }
 .undo-toast>button:hover { background:var(--accent-soft); }
+
+/* A small muted label in front of the quick-commands bar's chips, shown only once there is
+   learned history to label (the empty-state hint speaks for itself otherwise). */
+.quick-commands-label { flex:none; color:var(--faint); font-size:9.5px; letter-spacing:.3px; white-space:nowrap; }

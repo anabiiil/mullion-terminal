@@ -97,7 +97,11 @@ class LocalStore {
     return (await this.update(state => ({ ...state, settings: normalizeSettings(settings) }))).settings;
   }
 
-  async record(command, cwd) {
+  // `onlyIfExists` is set by the caller for a command that ran but failed on its own terms
+  // (a non-zero status that isn't "command not found"/"not executable"): it must never create
+  // a brand-new history entry (a command that has never once succeeded isn't "learned"), but a
+  // command that has succeeded before still gets its count/lastUsed bumped.
+  async record(command, cwd, { onlyIfExists = false } = {}) {
     if (typeof command !== 'string' || command.length > 8192 || /[\0\r\n\x1b]/.test(command)) throw new Error('Invalid command.');
     command = command.trim();
     // App-injected commands (sidebar folder navigation, internal hooks) are never
@@ -105,6 +109,7 @@ class LocalStore {
     if (!command || isInjectedCommand(command)) return this.snapshot().history;
     return (await this.update(state => {
       const previous = state.history.find(entry => entry.command === command);
+      if (onlyIfExists && !previous) return state;
       const entry = { command, cwd, count: Math.min(Number.MAX_SAFE_INTEGER, (previous?.count ?? 0) + 1), lastUsed: this.now(), pinned: previous?.pinned ?? false };
       return { ...state, history: capHistory([entry, ...state.history.filter(item => item.command !== command)]) };
     })).history;

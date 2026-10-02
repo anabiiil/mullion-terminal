@@ -5,9 +5,41 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
 const { defaultEnvironment, utf8Locale, prepareShell } = require('../electron/shell.cjs');
+const { PromptParser } = require('../electron/osc.cjs');
 const { version } = require('../package.json');
+
+// Bridges a PTY to a child shell over plain pipes, the same way navigation.test.cjs does, so
+// these tests don't depend on Electron's native node-pty ABI. Used by the exit-status tests
+// below, which need a real interactive shell (precmd/PROMPT_COMMAND only fire with one).
+const PTY_BRIDGE = `import os, pty, sys, select, json, signal
+config = json.loads(sys.argv[1])
+pid, fd = pty.fork()
+if pid == 0:
+    os.chdir(config['cwd'])
+    os.execv(config['shell'], [config['shell']] + config['args'])
+while True:
+    readable, _, _ = select.select([fd, sys.stdin.fileno()], [], [])
+    for source in readable:
+        try:
+            data = os.read(source, 65536)
+        except OSError:
+            sys.exit(0)
+        if not data:
+            try: os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            sys.exit(0)
+        os.write(sys.stdout.fileno() if source == fd else fd, data)
+`;
+
+async function waitFor(predicate, reason, timeoutMs = 6000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) assert.fail(reason);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}
 
 // What a Finder/Dock launch hands the Electron main process on macOS.
 const launchd = {
@@ -165,4 +197,59 @@ test('PowerShell colors parameters blue only when the user kept the default colo
   const block = script.slice(script.indexOf('ParameterColor') - 200);
   assert.match(block, /\n# Match the zsh flag color[^\n]*\n(#[^\n]*\n)*try \{\n  if \(\(Get-PSReadLineOption\)\.ParameterColor -eq "\$\(\[char\]0x1b\)\[90m"\) \{\n    Set-PSReadLineOption -Colors @\{ Parameter = "\$\(\[char\]0x1b\)\[38;2;47;129;247m" \} -ErrorAction Stop\n  \}\n\} catch \{ \}\n/);
   assert.ok(script.indexOf('$global:__mullion_navigation_available = 1\n} catch {') < script.indexOf('ParameterColor'), 'key handlers keep their own try/catch');
+});
+
+// A real prompt theme (pure, starship, powerlevel10k, …) registers its own precmd hook (zsh)
+// or its own PROMPT_COMMAND entry (bash) in the user's rc file, and — like add-zsh-hook —
+// that registration runs before ours, since our hooks are appended after the user's rc has
+// already loaded. If our "ready" hook read $? directly, it would see whatever that hook last
+// left behind (its own exit status, often forced to 0), not the status of the command the
+// user actually ran: every command, typos included, would look like a success and get
+// learned. The real exit status is only captured by a dedicated hook kept at the very front
+// (zsh: index 1 of precmd_functions; bash: the first entry of PROMPT_COMMAND).
+test("zsh reports the real exit status even when a prompt theme's own precmd hook runs first", { skip: process.platform === 'win32' || !require('node:fs').existsSync('/bin/zsh') || !require('node:fs').existsSync('/usr/bin/python3') }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mullion-status-zsh-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home');
+  await fs.mkdir(home);
+  await fs.writeFile(path.join(home, '.zshrc'), "autoload -Uz add-zsh-hook\n__user_theme_precmd() { return 0; }\nadd-zsh-hook precmd __user_theme_precmd\n");
+  const env = { ...defaultEnvironment(home), HISTFILE: path.join(root, 'isolated-history') };
+  delete env.ZDOTDIR;
+  const launch = await prepareShell({ directory: path.join(root, 'integration'), nonce: 'status-zsh', home, env, shell: '/bin/zsh', platform: 'linux' });
+  const child = spawn('/usr/bin/python3', ['-c', PTY_BRIDGE, JSON.stringify({ cwd: home, shell: launch.shell, args: launch.args })], { cwd: home, env: launch.env, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => child.kill('SIGKILL'));
+  const statuses = [];
+  const parser = new PromptParser('status-zsh', prompt => { if (prompt.ready && typeof prompt.status === 'number') statuses.push(prompt.status); });
+  child.stdout.on('data', data => parser.feed(data.toString()));
+  child.on('error', error => assert.fail(error));
+  await waitFor(() => statuses.length >= 1, 'zsh did not start');
+  child.stdin.write('definitely-not-a-command-xyz\r');
+  await waitFor(() => statuses.length >= 2, 'The typo command did not complete');
+  child.stdin.write('true\r');
+  await waitFor(() => statuses.length >= 3, '"true" did not complete');
+  assert.equal(statuses[1], 127, "the real \"command not found\" status, not the theme's precmd return value");
+  assert.equal(statuses[2], 0);
+});
+
+test("bash reports the real exit status even when a prompt theme's own PROMPT_COMMAND runs first", { skip: process.platform === 'win32' || !require('node:fs').existsSync('/bin/bash') || !require('node:fs').existsSync('/usr/bin/python3') }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mullion-status-bash-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home');
+  await fs.mkdir(home);
+  await fs.writeFile(path.join(home, '.bashrc'), '__user_theme_prompt_command() { return 0; }\nPROMPT_COMMAND="__user_theme_prompt_command"\n');
+  const env = { ...defaultEnvironment(home), HISTFILE: path.join(root, 'isolated-history') };
+  const launch = await prepareShell({ directory: path.join(root, 'integration'), nonce: 'status-bash', home, env, shell: '/bin/bash', platform: 'linux' });
+  const child = spawn('/usr/bin/python3', ['-c', PTY_BRIDGE, JSON.stringify({ cwd: home, shell: launch.shell, args: launch.args })], { cwd: home, env: launch.env, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => child.kill('SIGKILL'));
+  const statuses = [];
+  const parser = new PromptParser('status-bash', prompt => { if (prompt.ready && typeof prompt.status === 'number') statuses.push(prompt.status); });
+  child.stdout.on('data', data => parser.feed(data.toString()));
+  child.on('error', error => assert.fail(error));
+  await waitFor(() => statuses.length >= 1, 'bash did not start');
+  child.stdin.write('definitely-not-a-command-xyz\r');
+  await waitFor(() => statuses.length >= 2, 'The typo command did not complete');
+  child.stdin.write('true\r');
+  await waitFor(() => statuses.length >= 3, '"true" did not complete');
+  assert.equal(statuses[1], 127, "the real \"command not found\" status, not the theme's PROMPT_COMMAND return value");
+  assert.equal(statuses[2], 0);
 });

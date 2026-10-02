@@ -39,7 +39,7 @@ const BASIC_COMMANDS = new Set([
   'history', 'rm', 'rmdir', 'mv', 'cp', 'mkdir', 'touch', 'cat', 'less', 'more', 'head', 'tail', 'open',
   'xdg-open', 'start', 'explorer', 'nano', 'rnano', 'pico', 'vi', 'vim', 'nvim', 'view', 'emacs', 'echo',
   'printf', 'arch', 'uname', 'whoami', 'hostname', 'date', 'cal', 'which', 'where', 'type', 'man', 'help',
-  'chmod', 'chown', 'ln', 'file', 'stat', 'du', 'df', 'tree', 'sleep', 'true', 'false',
+  'chmod', 'chown', 'ln', 'file', 'stat', 'du', 'df', 'tree', 'sleep', 'true', 'false', 'yes',
   // PowerShell equivalents.
   'set-location', 'sl', 'chdir', 'get-location', 'gl', 'get-childitem', 'gci', 'remove-item', 'ri', 'del',
   'erase', 'move-item', 'mi', 'move', 'copy-item', 'ci', 'copy', 'new-item', 'ni', 'md', 'get-content', 'gc',
@@ -89,6 +89,10 @@ export function isBasicCommand(command: string): boolean {
   const first = tokens[0].toLowerCase();
   if (BASIC_COMMANDS.has(first)) return true;
   if (tokens.length === 1 && NON_ASCII_ONLY.test(tokens[0])) return true;
+  // A bare `sudo` or `exec` (no command after it) does nothing worth learning; `sudo <cmd>`
+  // and `exec <cmd>` are unaffected, since meaningfulTokens already strips a leading `sudo`
+  // wrapper when there's a real command after it.
+  if (tokens.length === 1 && (first === 'sudo' || first === 'exec')) return true;
   return false;
 }
 

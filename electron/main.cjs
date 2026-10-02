@@ -202,8 +202,8 @@ async function createSession(directory = startupDirectory) {
     navigationAvailable: false,
     navigationPending: null,
   };
-  session.submissions = new SubmissionTracker(command => {
-    store.record(command, session.info.cwd).then(history => send({ type: 'history', history })).catch(error => {
+  session.submissions = new SubmissionTracker((command, options) => {
+    store.record(command, session.info.cwd, options).then(history => send({ type: 'history', history })).catch(error => {
       // Disk failures must not interrupt a running shell.
       console.error('Could not save command history:', error.message);
     });

@@ -2,6 +2,18 @@
 
 All notable changes to Mullion Terminal are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.6] - 2026-10-02
+
+### Changed
+- A command that fails on its own terms the first time it's run (a typo like `git psuh` or `brew upgrde`, exiting non-zero) is no longer learned as a brand-new history entry — only a command that has succeeded at least once can have its use count bumped by a later failed run. "Command not found" (status 127) and "not executable" (status 126) are still never learned, and stopping a long-running command on purpose (`Ctrl+C`, `SIGTERM`) still counts as learned, same as a normal exit.
+- The exit status a shell reports after each command is now captured by a dedicated hook kept at the very front of zsh's `precmd` chain (and the front of bash's `PROMPT_COMMAND`), so a prompt theme's own hooks can no longer leave Mullion reading the wrong status.
+- A bare `sudo` or `exec` (nothing after it) and the `yes` command are now treated as basic/routine, like `true`/`false`, and stay out of the History sidebar and quick-commands bar.
+- The bottom quick-commands bar now shows a small "Most used" label in front of your learned commands, once there are any.
+
+### Fixed
+- The macOS download no longer opens with "Mullion Terminal is damaged": the whole app bundle is now properly signed (ad-hoc), so macOS shows its usual first-launch prompt for apps from outside the App Store instead.
+- The History sidebar's command count only counts the commands it lists, not the routine ones (`cd`, `ls`, `clear`…) that are kept only for suggestions.
+
 ## [0.1.5] - 2026-10-02
 
 ### Added

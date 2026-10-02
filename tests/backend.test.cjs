@@ -130,6 +130,65 @@ test('SubmissionTracker skips a command that failed with "command not found" (PO
   assert.deepEqual(records, ['git status', 'still learned without a status']);
 });
 
+test('SubmissionTracker skips a command that failed because it was "not executable" (POSIX status 126), same as 127', () => {
+  const records = [];
+  const tracker = new SubmissionTracker(command => records.push(command));
+  tracker.submit('./not-executable.sh');
+  tracker.hook('./not-executable.sh');
+  tracker.finish(126);
+  assert.deepEqual(records, []);
+});
+
+test('SubmissionTracker never creates a new history entry for a command that failed on its own terms, but still bumps one that has succeeded before', () => {
+  const calls = [];
+  const tracker = new SubmissionTracker((command, options) => calls.push({ command, options }));
+  // A typo-like failure (e.g. `git psuh` exiting 1, a real shell error, not "command not found"):
+  // it must be reported with onlyIfExists so the store never learns it as a brand-new command.
+  tracker.submit('git psuh');
+  tracker.hook('git psuh');
+  tracker.finish(1);
+  // A command that previously succeeded and now fails must still have its count/lastUsed
+  // bumped — the "onlyIfExists" gate only blocks *creating* an entry, not updating one.
+  tracker.submit('npm test');
+  tracker.hook('npm test');
+  tracker.finish(3);
+  assert.deepEqual(calls, [
+    { command: 'git psuh', options: { onlyIfExists: true } },
+    { command: 'npm test', options: { onlyIfExists: true } },
+  ]);
+});
+
+test('SubmissionTracker treats success, Ctrl+C (130), SIGTERM (143), and an unreported status as success-equivalent, always recording', () => {
+  const calls = [];
+  const tracker = new SubmissionTracker((command, options) => calls.push({ command, options }));
+  for (const status of [0, 130, 143, undefined]) {
+    tracker.submit(`command-${status}`);
+    tracker.hook(`command-${status}`);
+    tracker.finish(status);
+  }
+  assert.deepEqual(calls, [0, 130, 143, undefined].map(status => ({ command: `command-${status}`, options: {} })));
+});
+
+test('store.record() with onlyIfExists never creates a new entry, but still bumps an existing one', async t => {
+  const root = await temporary(t);
+  let now = 100;
+  const store = new LocalStore(root, () => ++now);
+  await store.load();
+  // A command that has never succeeded must never appear in history at all.
+  await store.record('git psuh', '/work', { onlyIfExists: true });
+  assert.deepEqual((await store.load()).history, []);
+  // Once it has succeeded (a normal record), a later failure still updates it in place.
+  await store.record('npm test', '/work');
+  const afterFirstSuccess = (await store.load()).history.find(entry => entry.command === 'npm test');
+  assert.equal(afterFirstSuccess.count, 1);
+  await store.record('npm test', '/work', { onlyIfExists: true });
+  const afterLaterFailure = (await store.load()).history.find(entry => entry.command === 'npm test');
+  assert.equal(afterLaterFailure.count, 2);
+  assert(afterLaterFailure.lastUsed >= afterFirstSuccess.lastUsed);
+  // The typo is still nowhere in history.
+  assert.equal((await store.load()).history.some(entry => entry.command === 'git psuh'), false);
+});
+
 test('isInjectedCommand flags app-typed navigation and internal hooks only', () => {
   assert(isInjectedCommand("builtin cd -- '/tmp'"));
   assert(isInjectedCommand("Set-Location -LiteralPath 'C:\\tmp'"));
