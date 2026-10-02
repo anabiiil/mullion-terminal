@@ -2,6 +2,19 @@
 
 All notable changes to Mullion Terminal are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.7] - 2026-10-02
+
+### Fixed
+- Windows: double-clicking a folder in the directory tree failed with "Folder navigation requires the shell line editor" on Windows PowerShell 5.1, and accepting a suggestion or a quick command left the old input in place with a stray letter from the keyboard layout (e.g. `ع` on an Arabic layout). PSReadLine 2.0, which ships with Windows, lacks the editing function the app bound to `Ctrl+U`, and that one failure skipped every other binding.
+- Windows: switching input language while a tab is open (e.g. Arabic ⇄ English) no longer breaks folder navigation ("The shell did not accept the folder change") or line replacement (which typed letters like `ءل` / `ثع`). The app now uses function-key chords for its own shell commands in PowerShell, which match under any keyboard layout, and `Ctrl+X` stays PSReadLine's Cut.
+- Windows: after a folder change, the prompt's `❯` is no longer drawn as `?`. After the terminal is resized (for example, by opening the sidebar), a folder change no longer overwrites the last line of output or leaves the old prompt behind.
+- Windows: PowerShell now reports each command's result, so a mistyped command ("is not recognized") or one that never succeeded is no longer learned into history, matching macOS and Linux.
+- Windows: with PowerShell 7, suggestions while typing never appeared, because PSReadLine's own gray prediction sat after the cursor. Those predictions are now turned off in the app's tabs.
+- Windows: the directory tree and path suggestions no longer list items File Explorer hides (`NTUSER.DAT`, `ntuser.ini`, and junctions like `Application Data` or `Cookies` that deny access); **Show hidden files** still includes them.
+- Windows: the window can be dragged from the whole empty title bar instead of only the app name.
+- Windows: `npm install` no longer requires Python and the Visual Studio C++ tools (node-pty's prebuilt Windows binaries are used as they are), and no longer fails when the project path contains a space and `node` is a `.cmd` wrapper from a Node version manager. `npm run dist:win` doesn't rebuild native modules either.
+- Settings lists Windows shortcuts without macOS `⌘` symbols.
+
 ## [0.1.6] - 2026-10-02
 
 ### Changed

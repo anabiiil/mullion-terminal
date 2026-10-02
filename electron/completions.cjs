@@ -3,6 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
+const { hiddenNames } = require('./hidden-files.cjs');
 
 function quoteToken(value, platform = process.platform) {
   const unsafe = platform === 'win32' ? /[^A-Za-z0-9_./:\\-]/ : /[^A-Za-z0-9_./:-]/;
@@ -174,8 +175,10 @@ async function complete({ line, cwd, platform = process.platform, environmentPat
   else if (directory.startsWith('~/') || directory.startsWith('~\\')) directory = pathApi.join(home, directory.slice(2));
   else directory = pathApi.resolve(cwd, directory);
   let entries;
-  try { entries = await fs.readdir(directory, { withFileTypes: true }); } catch { return commandResults; }
-  const results = await Promise.all(entries.filter(entry => !/[\x00-\x1f\x7f-\x9f]/.test(entry.name) && matches(entry.name, prefix, platform) && (showHidden || prefix.startsWith('.') || !entry.name.startsWith('.'))).slice(0, 500).map(async entry => {
+  let hidden;
+  try { [entries, hidden] = await Promise.all([fs.readdir(directory, { withFileTypes: true }), showHidden ? new Set() : hiddenNames(directory, platform)]); } catch { return commandResults; }
+  const visible = entry => showHidden || ((prefix.startsWith('.') || !entry.name.startsWith('.')) && !hidden.has(entry.name));
+  const results = await Promise.all(entries.filter(entry => !/[\x00-\x1f\x7f-\x9f]/.test(entry.name) && matches(entry.name, prefix, platform) && visible(entry)).slice(0, 500).map(async entry => {
     let isDirectory = entry.isDirectory();
     if (entry.isSymbolicLink()) {
       try { isDirectory = (await fs.stat(pathApi.join(directory, entry.name))).isDirectory(); } catch {}

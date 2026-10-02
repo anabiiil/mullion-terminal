@@ -11,8 +11,9 @@ const { randomUUID, randomBytes } = require('node:crypto');
 const pty = require('node-pty');
 const { LocalStore } = require('./store.cjs');
 const { PromptParser } = require('./osc.cjs');
-const { defaultEnvironment, prepareShell, NAVIGATION_SEQUENCE, navigationRequest } = require('./shell.cjs');
+const { defaultEnvironment, prepareShell, navigationRequest } = require('./shell.cjs');
 const { complete } = require('./completions.cjs');
+const { hiddenNames } = require('./hidden-files.cjs');
 const { SubmissionTracker } = require('./submissions.cjs');
 const { createEditorService } = require('./editors.cjs');
 const { pathsFromArgv, resolveOpenTarget } = require('./open-paths.cjs');
@@ -195,10 +196,11 @@ async function createSession(directory = startupDirectory) {
   }
   const session = {
     pty: terminalProcess,
-    info: { id, cwd, shell: path.basename(launch.shell), platform: process.platform, ready: false, alive: true },
+    info: { id, cwd, shell: path.basename(launch.shell), platform: process.platform, ready: false, alive: true, lineReset: launch.lineReset },
     environmentPath: launch.env.PATH || '',
     integrationDirectory,
     navigationFile: launch.navigationFile,
+    navigationSequence: launch.navigationSequence,
     navigationAvailable: false,
     navigationPending: null,
   };
@@ -298,7 +300,7 @@ function registerIpc() {
       if (!session.info.alive || session.navigationPending?.requestId !== requestId) throw new Error('This terminal session has ended.');
       await fs.rename(temporary, session.navigationFile);
       if (!session.info.alive || session.navigationPending?.requestId !== requestId) throw new Error('The folder change was canceled.');
-      session.pty.write(NAVIGATION_SEQUENCE);
+      session.pty.write(session.navigationSequence);
     } catch (error) { finishNavigation(session, error); }
     finally { fs.unlink(temporary).catch(() => {}); }
     return completion;
@@ -306,8 +308,8 @@ function registerIpc() {
   handle('list-directory', async (directory, showHidden = false) => {
     if (typeof showHidden !== 'boolean') throw new Error('Invalid visibility setting.');
     const folder = resolvedPath(directory);
-    const entries = await fs.readdir(folder, { withFileTypes: true });
-    const visible = entries.filter(entry => showHidden || !entry.name.startsWith('.')).slice(0, 5000);
+    const [entries, hidden] = await Promise.all([fs.readdir(folder, { withFileTypes: true }), showHidden ? new Set() : hiddenNames(folder)]);
+    const visible = entries.filter(entry => showHidden || (!entry.name.startsWith('.') && !hidden.has(entry.name))).slice(0, 5000);
     const output = await Promise.all(visible.map(async entry => {
       const file = path.join(folder, entry.name);
       let isDirectory = entry.isDirectory();

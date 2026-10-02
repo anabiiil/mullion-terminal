@@ -140,7 +140,9 @@ kbd { font-size:9px; border:1px solid var(--border); border-radius:4px; padding:
 .brand { display:flex; align-items:center; gap:8px; flex:none; font-size:12px; font-weight:650; white-space:nowrap; }
 .brand b { color:var(--muted); font-weight:450; }
 .brand-mark { width:25px; height:25px; display:grid; place-items:center; border-radius:7px; background:var(--accent); color:#161c28; }
-.titlebar-actions { display:flex; align-items:center; justify-content:flex-end; gap:4px; flex:1; min-width:0; height:100%; -webkit-app-region:no-drag; }
+/* The empty stretch of the actions row stays a window drag handle (the only one
+   on Windows/Linux, where the window is frameless); its buttons opt out above. */
+.titlebar-actions { display:flex; align-items:center; justify-content:flex-end; gap:4px; flex:1; min-width:0; height:100%; }
 .toolbar-button { display:grid; place-items:center; width:29px; height:29px; border-radius:7px; flex:none; color:var(--muted); }
 .toolbar-button:hover { background:var(--row); color:var(--text); }
 .toolbar-button.active { background:var(--accent-soft); color:var(--accent-text); }
