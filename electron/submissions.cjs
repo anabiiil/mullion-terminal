@@ -46,8 +46,9 @@ class SubmissionTracker {
   // still update an entry that has succeeded before (so a flaky command keeps its
   // place in history), but it must never create a brand-new entry for a command
   // that has never once worked (a typo like `git psuh` isn't "learned").
-  // An unknown status (e.g. PowerShell, or no shell integration) keeps the
-  // original behavior: always record.
+  // PowerShell's prompt maps its own results onto the same codes (127 for "not
+  // recognized", 130 for Ctrl+C). An unknown status (no shell integration)
+  // keeps the original behavior: always record.
   finish(status) {
     if (this.resolved) return;
     const command = this.hooked ?? this.pending;

@@ -247,14 +247,14 @@ They only appear for folders that look like coding projects (manifests like `pac
 Check that **Suggestions while typing** is on in Settings. The popup or inline hint only appears once the shell prompt is ready and idle.
 
 **Which shells are supported?**
-zsh or bash on macOS and Linux, and PowerShell 7 (or Windows PowerShell as a fallback) on Windows. Shell integration is loaded through temporary configuration files — the app doesn't modify your shell profiles. Fish and `cmd.exe` aren't supported by the current prompt integration.
+zsh or bash on macOS and Linux, and PowerShell 7 (or Windows PowerShell as a fallback) on Windows. Shell integration is loaded through temporary configuration files — the app doesn't modify your shell profiles. In PowerShell, PSReadLine's own gray inline predictions are turned off inside the app's tabs, since the app shows its own suggestions there. Fish and `cmd.exe` aren't supported by the current prompt integration.
 
 **Homebrew, `sudo` or my PATH behave differently than in my usual terminal.**
 They shouldn't — each tab starts your shell the way Terminal.app does. On macOS, zsh runs as a login shell (`/etc/zprofile` with `path_helper`, then your `.zshenv`, `.zprofile`, `.zshrc` and `.zlogin`), and bash reads `/etc/profile` and the first of `~/.bash_profile`, `~/.bash_login` or `~/.profile`, so `eval "$(/opt/homebrew/bin/brew shellenv)"` and `/etc/paths.d` entries work even when the app is opened from Finder or the Dock. If no locale is set, `LANG` defaults to a UTF-8 locale for your macOS region (falling back to `en_US.UTF-8`). The app's own internal variables are never passed to the shell, while session variables such as `SSH_AUTH_SOCK` are. `sudo` prompts on a real terminal device; what you type at a password prompt is never shown as a suggestion or saved to history. On Windows, PowerShell loads your profiles and inherits the PATH the app was started with — if you just installed something with winget, Scoop or Chocolatey, restart the app so new tabs pick up the updated PATH. Tabs set `TERM_PROGRAM=Mullion-Terminal`.
 
 ## Building from source
 
-Requires Node.js 24 and npm. Building the native `node-pty` dependency may need Xcode Command Line Tools on macOS, Visual Studio C++ Build Tools on Windows, or Python and a C++ toolchain on Linux.
+Requires Node.js 24 and npm. Building the native `node-pty` dependency may need Xcode Command Line Tools on macOS, or Python and a C++ toolchain on Linux. Windows needs no build tools: `node-pty` ships prebuilt Windows binaries, which install and `npm run dist:win` use as they are.
 
 ```sh
 npm ci              # install dependencies and rebuild native modules

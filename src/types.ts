@@ -1,6 +1,7 @@
 export interface Settings { autoComplete: boolean; showSuggestions: boolean; fontSize: number; theme: 'dark' | 'light'; showHiddenFiles: boolean; finderQuickAction: boolean; }
 export interface HistoryEntry { command: string; count: number; lastUsed: number; cwd: string; pinned: boolean; }
-export interface SessionInfo { id: string; cwd: string; shell: string; platform: string; ready: boolean; alive: boolean; }
+// lineReset: the bytes that clear the shell's whole input line before a replacement (see electron/shell.cjs).
+export interface SessionInfo { id: string; cwd: string; shell: string; platform: string; ready: boolean; alive: boolean; lineReset?: string; }
 export interface DirectoryEntry { name: string; path: string; isDirectory: boolean; isSymbolicLink: boolean; }
 export interface EditorInfo { id: string; name: string; icon?: string; }
 export interface ProjectEditors { languages: string[]; editors: EditorInfo[]; }

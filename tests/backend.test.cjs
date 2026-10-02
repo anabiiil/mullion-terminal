@@ -324,11 +324,20 @@ test('PowerShell startup keeps profiles and uses inline encoding without policy 
   assert(script.includes('Import-Module PSReadLine -ErrorAction Stop'));
   assert(script.includes("Set-PSReadLineKeyHandler -Chord 'Ctrl+e' -Function EndOfLine"));
   assert(script.includes("Set-PSReadLineKeyHandler -Chord 'Ctrl+u' -Function BackwardDeleteInput"));
+  // Windows PowerShell 5.1 ships PSReadLine 2.0, which only has BackwardDeleteLine.
+  assert(script.includes("Set-PSReadLineKeyHandler -Chord 'Ctrl+u' -Function BackwardDeleteLine"));
+  assert(script.includes('Set-PSReadLineOption -PredictionSource None'));
+  assert(script.includes('$global:__mullion_navigation_available;$mullionStatus'));
   assert(script.includes('} catch {'));
   assert(script.includes('Split-Path -Path $mullionCwd -Leaf'));
   assert(script.includes('"$mullionName ❯ "'));
   assert(!script.includes('__mullion_previousPrompt'));
-  assert(script.includes("Set-PSReadLineKeyHandler -Chord 'Ctrl+x,Ctrl+g' -ScriptBlock { __mullion_navigate }"));
+  // Function-key chords: a Ctrl+letter chord breaks once ConPTY and PowerShell disagree on the keyboard layout.
+  assert(script.includes("Set-PSReadLineKeyHandler -Chord 'Ctrl+Alt+Shift+F12' -ScriptBlock { __mullion_navigate }"));
+  assert(script.includes("Set-PSReadLineKeyHandler -Chord 'Ctrl+Alt+Shift+F11' -Function RevertLine"));
+  assert(!script.includes('Ctrl+x,Ctrl+g'), 'Ctrl+X stays bound to Cut');
+  assert.equal(launch.navigationSequence, '\x1b[24;8~');
+  assert.equal(launch.lineReset, '\x1b[23;8~');
   assert(script.includes('Microsoft.PowerShell.Management\\Set-Location -LiteralPath $mullionFields[1]'));
   assert(script.includes('[Microsoft.PowerShell.PSConsoleReadLine]::InvokePrompt()'));
   assert(script.includes('.Split([char]0)'));

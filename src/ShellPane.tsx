@@ -156,6 +156,8 @@ export default function ShellPane(props: Props) {
     }
 
     function schedule() { clearTimeout(timer); timer = setTimeout(suggest, 65); }
+    // Clears the whole input line before a replacement; PowerShell uses its own sequence.
+    function lineReset() { return current.current.session.lineReset ?? '\x05\x15'; }
     function send(data: string, acceptedCommand?: string, record?: boolean) {
       // Capture before beforeInput resets the line on Enter. The accepted
       // replacement is already verified against the popup's source line, but
@@ -185,7 +187,7 @@ export default function ShellPane(props: Props) {
       else {
         tracker.current.beforeReplacement(command, term);
         revision.current++;
-        api.write(id, '\x05\x15' + command);
+        api.write(id, lineReset() + command);
       }
       if (run) send('\r', command);
       term.focus();
@@ -321,7 +323,7 @@ export default function ShellPane(props: Props) {
         hide(); suppressed.current = true;
         tracker.current.beforeReplacement(command, term);
         revision.current++;
-        api.write(id, '\x05\x15' + command); term.focus();
+        api.write(id, lineReset() + command); term.focus();
       },
       // Replaces the current input line and submits it, like accepting a
       // suggestion with Enter, so history and the input tracker stay consistent.
@@ -331,7 +333,7 @@ export default function ShellPane(props: Props) {
         hide(); suppressed.current = true;
         tracker.current.beforeReplacement(command, term);
         revision.current++;
-        api.write(id, '\x05\x15' + command);
+        api.write(id, lineReset() + command);
         send('\r', command, options?.record);
         term.focus();
         return true;
