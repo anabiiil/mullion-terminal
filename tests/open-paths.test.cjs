@@ -103,7 +103,8 @@ test('urlsFromArgv picks out mullion-terminal links, and pathsFromArgv never tre
   const { root, folder } = await fixture(t);
   const url = `mullion-terminal://open?mode=window&path=${encodeURIComponent(folder)}`;
   // A relative "path" that happens to exist under cwd must still not match a link.
-  await fs.mkdir(path.join(root, 'mullion-terminal:'), { recursive: true });
+  // Windows can't create a name with ':' at all, so there's nothing to collide with.
+  if (process.platform !== 'win32') await fs.mkdir(path.join(root, 'mullion-terminal:'), { recursive: true });
   const argv = ['/opt/app', '--open-mode=window', url, 'https://example.com', folder];
   assert.deepEqual(urlsFromArgv(argv), [url]);
   assert.deepEqual(urlsFromArgv(['/usr/bin/electron', url, url], { isPackaged: false }), [url]);
