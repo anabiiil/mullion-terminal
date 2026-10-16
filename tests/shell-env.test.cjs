@@ -6,7 +6,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { execFileSync, spawn } = require('node:child_process');
-const { defaultEnvironment, utf8Locale, prepareShell } = require('../electron/shell.cjs');
+const { defaultEnvironment, utf8Locale, prepareShell, powershellBootstrap } = require('../electron/shell.cjs');
 const { PromptParser } = require('../electron/osc.cjs');
 const { version } = require('../package.json');
 
@@ -192,8 +192,8 @@ test('PowerShell colors parameters blue only when the user kept the default colo
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mullion-shell-pwsh-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const launch = await prepareShell({ directory: path.join(root, 'integration'), nonce: 'n', home: root, shell: '/usr/local/bin/pwsh', platform: 'darwin', env: { PATH: '/usr/bin:/bin' } });
-  const script = Buffer.from(launch.args.at(-1), 'base64').toString('utf16le');
-  assert.equal(script, await fs.readFile(path.join(root, 'integration', 'prompt.ps1'), 'utf8'));
+  assert.equal(Buffer.from(launch.args.at(-1), 'base64').toString('utf16le'), powershellBootstrap(path.join(root, 'integration', 'prompt.ps1')));
+  const script = await fs.readFile(path.join(root, 'integration', 'prompt.ps1'), 'utf8');
   assert.ok(script.includes("flag = '38;2;47;129;247'"), 'the default flag color is the zsh blue');
   assert.match(script, /if \(\$mullionWanted -and \(\$mullionCurrent -eq "\$\(\[char\]0x1b\)\[90m" -or \$mullionCurrent -eq \$global:__mullion_parameter_color\)\) \{\n      Set-PSReadLineOption -Colors @\{ Parameter = \$mullionWanted \} -ErrorAction Stop/, 'only replaces the shipped DarkGray default, or a color it set itself');
   assert.ok(script.indexOf('$global:__mullion_navigation_available = 1\n} catch {') < script.indexOf('ParameterColor'), 'key handlers keep their own try/catch');

@@ -129,8 +129,9 @@ test('shell theme files keep the built-in colors by default and embed only sanit
       assert.match(line, /^(\s*__mullion_\w+='[%{}#0-9a-zF\\[\];=]*'|[a-z]+=[0-9;]*)$/, `only plain assignments: ${line}`);
     }
   }
-  execFileSync('/bin/zsh', ['-n', '-c', custom.zsh]);
-  execFileSync('/bin/bash', ['-n', '-c', custom.bash]);
+  // Syntax-check with whichever shells this machine has (CI runners lack zsh).
+  if (fsSync.existsSync('/bin/zsh')) execFileSync('/bin/zsh', ['-n', '-c', custom.zsh]);
+  if (fsSync.existsSync('/bin/bash')) execFileSync('/bin/bash', ['-n', '-c', custom.bash]);
 });
 
 test('theme files are written atomically into the theme directory', async t => {

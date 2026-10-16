@@ -17,6 +17,7 @@ All notable changes to Mullion Terminal are documented here. The format follows 
 - **Open folder** (the titlebar button and the sidebar's folder button) now opens the chosen folder in a new tab instead of moving the current tab there.
 
 ### Fixed
+- PowerShell on Windows starts reliably again: the launch command now only loads the shell integration from a file instead of carrying all of it inline, staying far below Windows' command-line length limit.
 - Typing a bare folder name after `cd` (no slash, like `Projec`) and pressing Tab no longer jumps to an unrelated previously-visited folder's full absolute path when the current folder already has a real, same-named subfolder — it completes to that subfolder's relative name instead, the same as it would without any visited-folder history. With auto-complete off, Tab now only ever accepts a suggestion when its inline ghost text is actually showing, and always inserts exactly what that ghost displayed.
 
 ## [0.1.7] - 2026-10-02

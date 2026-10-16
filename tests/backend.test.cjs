@@ -9,7 +9,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const { PromptParser } = require('../electron/osc.cjs');
 const { LocalStore, normalizeHistory, normalizeDirectories, HISTORY_LIMIT, DIRECTORIES_LIMIT } = require('../electron/store.cjs');
 const { quoteToken, directoryCommand, tokenize, complete, isInjectedCommand, abbreviateHome, visitedDirectoryCandidates } = require('../electron/completions.cjs');
-const { prepareShell, defaultEnvironment } = require('../electron/shell.cjs');
+const { prepareShell, defaultEnvironment, powershellBootstrap } = require('../electron/shell.cjs');
 const { SubmissionTracker } = require('../electron/submissions.cjs');
 
 async function temporary(t) {
@@ -317,8 +317,11 @@ test('PowerShell startup keeps profiles and uses inline encoding without policy 
   assert(launch.args.includes('-EncodedCommand'));
   assert(!launch.args.includes('-NoProfile'));
   assert(!launch.args.includes('-ExecutionPolicy'));
-  const script = Buffer.from(launch.args[launch.args.indexOf('-EncodedCommand') + 1], 'base64').toString('utf16le');
-  assert.equal(script, await fs.readFile(path.join(root, 'prompt.ps1'), 'utf8'));
+  const bootstrap = Buffer.from(launch.args[launch.args.indexOf('-EncodedCommand') + 1], 'base64').toString('utf16le');
+  // The whole command line must stay far below Windows' 32,767-character limit.
+  assert(launch.args.join(' ').length < 2000, 'the launch command only loads prompt.ps1');
+  assert.equal(bootstrap, powershellBootstrap(path.join(root, 'prompt.ps1')));
+  const script = await fs.readFile(path.join(root, 'prompt.ps1'), 'utf8');
   assert(script.includes('windows-test;ready;'));
   assert(script.includes('__mullion_firstPrompt'));
   assert(script.includes('Import-Module PSReadLine -ErrorAction Stop'));

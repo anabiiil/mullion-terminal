@@ -139,6 +139,10 @@ function executableDirectory(directory) {
   try { return fsSync.statSync(directory).isDirectory(); } catch { return false; }
 }
 
+function powershellBootstrap(file) {
+  return `. ([ScriptBlock]::Create([IO.File]::ReadAllText('${file.replace(/'/g, "''")}', [Text.Encoding]::UTF8)))`;
+}
+
 function selectShell(env = process.env, platform = process.platform) {
   if (platform === 'win32') {
     const programFiles = env.ProgramFiles || env.PROGRAMFILES || 'C:\\Program Files';
@@ -702,11 +706,12 @@ function global:prompt {
 }
 `;
     await fs.writeFile(rc, script, { mode: 0o600 });
-    // Inline commands work with Windows' normal script execution policy. Do not
-    // change ExecutionPolicy or disable the user's PowerShell profiles.
-    return { shell, args: ['-NoLogo', '-NoExit', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], env, navigationFile, navigationSequence: POWERSHELL_NAVIGATION_SEQUENCE, lineReset: POWERSHELL_LINE_RESET_SEQUENCE };
+    // Windows limits a command line to 32,767 characters, so the launch command
+    // only loads prompt.ps1. A script block is not subject to the execution
+    // policy, so ExecutionPolicy and the user's profiles stay untouched.
+    return { shell, args: ['-NoLogo', '-NoExit', '-EncodedCommand', Buffer.from(powershellBootstrap(rc), 'utf16le').toString('base64')], env, navigationFile, navigationSequence: POWERSHELL_NAVIGATION_SEQUENCE, lineReset: POWERSHELL_LINE_RESET_SEQUENCE };
   }
   throw new Error('Unsupported shell. Use zsh, bash, or PowerShell.');
 }
 
-module.exports = { defaultEnvironment, utf8Locale, selectShell, prepareShell, unixHooks, editorWrappers, flagHighlighter, gitSegmentScript, findExecutable, NAVIGATION_SEQUENCE, LINE_RESET_SEQUENCE, POWERSHELL_NAVIGATION_SEQUENCE, POWERSHELL_LINE_RESET_SEQUENCE, navigationRequest };
+module.exports = { powershellBootstrap, defaultEnvironment, utf8Locale, selectShell, prepareShell, unixHooks, editorWrappers, flagHighlighter, gitSegmentScript, findExecutable, NAVIGATION_SEQUENCE, LINE_RESET_SEQUENCE, POWERSHELL_NAVIGATION_SEQUENCE, POWERSHELL_LINE_RESET_SEQUENCE, navigationRequest };
