@@ -59,7 +59,27 @@
 				<key>ActionParameters</key>
 				<dict>
 					<key>COMMAND_STRING</key>
-					<string>open -b dev.mullion.terminal "$@"</string>
+					<string>encode() {
+  setopt localoptions nomultibyte
+  local LC_ALL=C value=$1 encoded= char index
+  for (( index = 1; index &lt;= ${#value}; index++ )); do
+    char=${value[index]}
+    case $char in
+      [A-Za-z0-9._~/-]) encoded+=$char ;;
+      *) encoded+=$(printf '%%%02X' "'$char") ;;
+    esac
+  done
+  print -r -- $encoded
+}
+base='mullion-terminal://open?mode=tab'
+url=$base
+count=0
+for item in "$@"; do
+  url+="&amp;path=$(encode "$item")"
+  (( ++count % 10 == 0 )) &amp;&amp; { open -b dev.mullion.terminal "$url"; url=$base; }
+done
+(( count % 10 )) &amp;&amp; open -b dev.mullion.terminal "$url"
+exit 0</string>
 					<key>CheckedForUserDefaultShell</key>
 					<true/>
 					<key>inputMethod</key>

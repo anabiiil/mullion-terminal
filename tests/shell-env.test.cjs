@@ -194,9 +194,27 @@ test('PowerShell colors parameters blue only when the user kept the default colo
   const launch = await prepareShell({ directory: path.join(root, 'integration'), nonce: 'n', home: root, shell: '/usr/local/bin/pwsh', platform: 'darwin', env: { PATH: '/usr/bin:/bin' } });
   const script = Buffer.from(launch.args.at(-1), 'base64').toString('utf16le');
   assert.equal(script, await fs.readFile(path.join(root, 'integration', 'prompt.ps1'), 'utf8'));
-  const block = script.slice(script.indexOf('ParameterColor') - 200);
-  assert.match(block, /\n# Match the zsh flag color[^\n]*\n(#[^\n]*\n)*try \{\n  if \(\(Get-PSReadLineOption\)\.ParameterColor -eq "\$\(\[char\]0x1b\)\[90m"\) \{\n    Set-PSReadLineOption -Colors @\{ Parameter = "\$\(\[char\]0x1b\)\[38;2;47;129;247m" \} -ErrorAction Stop\n  \}\n\} catch \{ \}\n/);
+  assert.ok(script.includes("flag = '38;2;47;129;247'"), 'the default flag color is the zsh blue');
+  assert.match(script, /if \(\$mullionWanted -and \(\$mullionCurrent -eq "\$\(\[char\]0x1b\)\[90m" -or \$mullionCurrent -eq \$global:__mullion_parameter_color\)\) \{\n      Set-PSReadLineOption -Colors @\{ Parameter = \$mullionWanted \} -ErrorAction Stop/, 'only replaces the shipped DarkGray default, or a color it set itself');
   assert.ok(script.indexOf('$global:__mullion_navigation_available = 1\n} catch {') < script.indexOf('ParameterColor'), 'key handlers keep their own try/catch');
+  assert.match(script, /\n__mullion_apply_parameter_color\n/, 'applied once at startup');
+  // The theme file is read as data and only when it changed; it is never executed.
+  assert.match(script, /if \(\$mullionStamp -eq \$global:__mullion_theme_stamp\) \{ return \}/);
+  assert.match(script, /-match '\^\(\[a-z\]\+\)=\(\[0-9;\]\*\)\$' -and \$global:__mullion_theme\.ContainsKey/);
+  assert.doesNotMatch(script, /Invoke-Expression|\n\s*\. \$/, 'the theme file is never run as a script');
+
+  // The git segment: PowerShell comments use `#`, never `//` — an easy slip to make when every
+  // other shell's generator in the same file is JS-template-literal-wrapped shell/bash (which do
+  // use `//` in a couple of places, e.g. the escaping comment), and a stray `//` here would be a
+  // PowerShell parse error, not merely a wrong comment, since `//` isn't valid PowerShell syntax.
+  assert.doesNotMatch(script, /\/\//, 'PowerShell comments must use #, never //');
+  assert.match(script, /\nfunction global:__mullion_git_segment \{\n  if \(\$env:MULLION_GIT_PROMPT -eq '0'\) \{ return '' \}\n  if \(-not \(Get-Command git -ErrorAction SilentlyContinue\)\) \{ return '' \}\n/);
+  assert.match(script, /__mullion_load_theme\n  \$mullionGit = __mullion_git_segment\n[\s\S]*\$mullionPrompt = if \(\$mullionGit\) \{ "\$mullionName \$mullionGit \$mullionArrow " \} else \{ "\$mullionName \$mullionArrow " \}\n[\s\S]*\n  \$mullionPrompt\n\}\n$/, 'the segment is computed in `prompt` and sits right after the path name, before ❯');
+  // __mullion_navigate measures the prompt's width from this, so it holds only visible text,
+  // and the git calls must not leave their own exit code where the user's command left one.
+  assert.match(script, /\$global:__mullion_promptText = \$mullionPrompt -replace "\$\(\[char\]27\)\\\[\[0-9;\]\*m", ''\n/);
+  assert.ok(script.indexOf('$global:LASTEXITCODE = $mullionExitCode') > script.indexOf('$mullionGit = __mullion_git_segment'), "the user's $LASTEXITCODE is restored after the git calls");
+  assert.ok(script.indexOf('function global:__mullion_git_segment') < script.indexOf('function global:prompt'), 'the function is defined before it is used');
 });
 
 // A real prompt theme (pure, starship, powerlevel10k, …) registers its own precmd hook (zsh)
@@ -231,6 +249,65 @@ test("zsh reports the real exit status even when a prompt theme's own precmd hoo
   assert.equal(statuses[2], 0);
 });
 
+test('the prompt gains a git segment right after the path, opts out with MULLION_GIT_PROMPT=0, and escapes what it embeds', () => {
+  const { gitSegmentScript, unixHooks } = require('../electron/shell.cjs');
+  const zshSegment = gitSegmentScript('zsh');
+  assert.match(zshSegment, /\[\[ "\$\{MULLION_GIT_PROMPT:-1\}" == 0 \]\] && return/, 'zsh opts out with MULLION_GIT_PROMPT=0');
+  assert.match(zshSegment, /__mullion_branch=\$\{__mullion_branch\/\/\\%\/%%\}/, 'zsh escapes a literal % in the branch name (its own prompt syntax)');
+  assert.match(zshSegment, /__mullion_upstream=\$\{__mullion_upstream\/\/\\%\/%%\}/, 'zsh escapes % in the upstream name too');
+  assert.match(zshSegment, /git:\(%f\$\{__mullion_c_branch\}/, 'the branch/sha renders in its own color');
+  assert.match(zshSegment, /\$\{__mullion_c_ahead\}↑/, 'ahead has its own color');
+  assert.match(zshSegment, /\$\{__mullion_c_behind\}↓/, 'behind has its own color');
+  const zshDefaults = unixHooks('n', 'zsh', '/tmp/navigation.request');
+  for (const line of ["__mullion_c_branch='%F{magenta}'", "__mullion_c_ahead='%F{2}'", "__mullion_c_behind='%F{1}'", "__mullion_c_git='%F{8}'", "__mullion_c_path='%F{cyan}'", "__mullion_c_arrow='%F{yellow}'"]) assert.ok(zshDefaults.includes(line), `built-in default ${line}`);
+  assert.match(zshSegment, /symbolic-ref --quiet --short HEAD/, 'resolves even on an unborn branch with no commits yet');
+  assert.match(zshSegment, /--no-optional-locks/, 'a prompt read never fights a command running in the same working tree');
+
+  const bashSegment = gitSegmentScript('bash');
+  assert.match(bashSegment, /\[\[ "\$\{MULLION_GIT_PROMPT:-1\}" == 0 \]\] && return/, 'bash opts out with MULLION_GIT_PROMPT=0');
+  // PS1 is re-expanded for $()/backticks/parameters every time it's displayed (bash's
+  // "promptvars", on by default) even though the whole value is rebuilt on every prompt, so a
+  // branch name is escaped before being spliced into PS1's new value.
+  assert.match(bashSegment, /__mullion_git_escaped=\$\{1\/\/\\\\\/\\\\\\\\\}/, 'bash escapes a literal backslash first');
+  assert.match(bashSegment, /__mullion_git_escaped=\$\{__mullion_git_escaped\/\/\\\$\/\\\\\\\$\}/, 'bash escapes $ so promptvars cannot re-expand it as a command/parameter substitution');
+  assert.match(bashSegment, /__mullion_git_escape "\$__mullion_branch"/, 'the branch name is actually escaped before use');
+  assert.match(bashSegment, /__mullion_git_escape "\$__mullion_upstream"/, 'the upstream name is actually escaped before use');
+
+  // Only two or three git calls: symbolic-ref (falls back to rev-parse --short HEAD only for a
+  // detached HEAD), then rev-parse for the upstream only once attached to a branch, then
+  // rev-list only once that upstream actually exists — never unconditionally.
+  for (const script of [zshSegment, bashSegment]) {
+    assert.equal((script.match(/rev-parse --short HEAD/g) ?? []).length, 1);
+    assert.equal((script.match(/rev-parse --abbrev-ref '@\{upstream\}'/g) ?? []).length, 1);
+    assert.equal((script.match(/rev-list --left-right --count '@\{upstream\}\.\.\.HEAD'/g) ?? []).length, 1);
+    assert.match(script, /if \(\( ! __mullion_detached \)\)|if \[\[ "\$__mullion_detached" == 0 \]\]/, 'the upstream is only looked up once attached to a branch');
+  }
+
+  // The exit status is captured by a dedicated hook kept at the very front of the precmd/
+  // PROMPT_COMMAND chain (see the tests above), into $__mullion_last_status — __mullion_ready
+  // reads that into a local *before* computing the git segment (which runs external git
+  // processes that would otherwise be free to clobber $? first).
+  const zshReady = unixHooks('n', 'zsh', '/tmp/navigation.request');
+  const zshBody = zshReady.slice(zshReady.indexOf('__mullion_ready() {'));
+  assert.match(zshBody, /^__mullion_ready\(\) \{\n  local __mullion_status=\$__mullion_last_status\n  __mullion_load_theme\n  __mullion_git_segment\n  PROMPT="/, 'zsh captures the status, re-reads the colors, computes the git segment, then builds PROMPT — in that order');
+  assert.match(zshBody, /PROMPT="\$\{__mullion_c_path\}%\(4~\|…\/%3~\|%~\)%f\$\{__mullion_git:\+ \}\$\{__mullion_git\}%f \$\{__mullion_c_arrow\}❯%f "/, 'the segment sits right after the path and before ❯, only when non-empty');
+
+  const bashReady = unixHooks('n', 'bash', '/tmp/navigation.request');
+  const bashBody = bashReady.slice(bashReady.indexOf('__mullion_ready() {'));
+  assert.match(bashBody, /^__mullion_ready\(\) \{\n  local __mullion_status=\$__mullion_last_status\n/, 'bash captures the status before anything else runs');
+  const gitCallIndex = bashBody.indexOf('__mullion_git_segment');
+  const ps1Index = bashBody.indexOf('PS1=');
+  assert.ok(gitCallIndex > 0 && gitCallIndex < ps1Index, 'bash computes the git segment before building PS1');
+  assert.match(bashBody, /PS1="\$\{__mullion_c_path\}\\w\\\[\\e\[0m\\\]\$\{__mullion_git:\+ \$__mullion_git\} \$\{__mullion_c_arrow\}❯\\\[\\e\[0m\\\] "/, 'the segment sits right after the path and before ❯, only when non-empty');
+  assert.ok(bashReady.includes("__mullion_c_path='\\[\\e[36m\\]'") && bashReady.includes("__mullion_c_arrow='\\[\\e[33m\\]'"), 'built-in default colors');
+  assert.ok(bashBody.indexOf('__mullion_load_theme') < gitCallIndex, 'bash re-reads the colors before building the segment');
+
+  // The opt-out and the whole segment are absent only when explicitly asked (sanity check that
+  // the generated hooks actually reference the function rather than silently dropping it).
+  assert.ok(zshReady.includes('__mullion_git_segment() {'));
+  assert.ok(bashReady.includes('__mullion_git_segment() {'));
+});
+
 test("bash reports the real exit status even when a prompt theme's own PROMPT_COMMAND runs first", { skip: process.platform === 'win32' || !require('node:fs').existsSync('/bin/bash') || !require('node:fs').existsSync('/usr/bin/python3') }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mullion-status-bash-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -252,4 +329,84 @@ test("bash reports the real exit status even when a prompt theme's own PROMPT_CO
   await waitFor(() => statuses.length >= 3, '"true" did not complete');
   assert.equal(statuses[1], 127, "the real \"command not found\" status, not the theme's PROMPT_COMMAND return value");
   assert.equal(statuses[2], 0);
+});
+
+// A real git repository with an upstream one commit ahead of it: a bare "origin" plus the repo
+// itself (rather than a separate clone — the repo pushes to the bare remote directly, which is
+// enough to give it a real @{upstream} and a real ahead count).
+async function gitFixtureWithUpstream(root) {
+  const repo = path.join(root, 'repo');
+  const bare = path.join(root, 'origin.git');
+  await fs.mkdir(repo, { recursive: true });
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=Mullion Test', '-c', 'user.email=test@example.com', ...args], { cwd: repo, encoding: 'utf8' });
+  git('-c', 'init.defaultBranch=main', 'init');
+  await fs.writeFile(path.join(repo, 'file.txt'), 'one\n');
+  git('add', 'file.txt');
+  git('commit', '-m', 'initial');
+  execFileSync('git', ['init', '--bare', bare]);
+  git('remote', 'add', 'origin', bare);
+  git('push', '-q', 'origin', 'main');
+  git('branch', '--set-upstream-to=origin/main', 'main');
+  git('commit', '--allow-empty', '-m', 'ahead by one');
+  return repo;
+}
+
+test('zsh shows the git segment, with upstream and ahead count, in a real interactive shell', { skip: process.platform === 'win32' || !require('node:fs').existsSync('/bin/zsh') || !require('node:fs').existsSync('/usr/bin/python3') || !require('node:fs').existsSync('/usr/bin/git') && !require('node:fs').existsSync('/usr/local/bin/git') }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mullion-git-prompt-zsh-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home');
+  await fs.mkdir(home);
+  const repo = await gitFixtureWithUpstream(root);
+  const env = { ...defaultEnvironment(home), HISTFILE: path.join(root, 'isolated-history') };
+  delete env.ZDOTDIR;
+  const launch = await prepareShell({ directory: path.join(root, 'integration'), nonce: 'git-prompt-zsh', home, env, shell: '/bin/zsh', platform: 'linux' });
+  const child = spawn('/usr/bin/python3', ['-c', PTY_BRIDGE, JSON.stringify({ cwd: repo, shell: launch.shell, args: launch.args })], { cwd: repo, env: launch.env, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => child.kill('SIGKILL'));
+  let visible = '';
+  const parser = new PromptParser('git-prompt-zsh', () => {});
+  child.stdout.on('data', data => { visible += parser.feed(data.toString()); });
+  child.on('error', error => assert.fail(error));
+  const plain = () => visible.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  await waitFor(() => /git:\(/.test(plain()), `zsh never showed the git prompt segment: ${plain()}`);
+  assert.match(plain(), /git:\(main → origin\/main ↑1\) ❯/, plain());
+});
+
+test('bash shows the git segment, with upstream and ahead count, in a real interactive shell', { skip: process.platform === 'win32' || !require('node:fs').existsSync('/bin/bash') || !require('node:fs').existsSync('/usr/bin/python3') }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mullion-git-prompt-bash-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home');
+  await fs.mkdir(home);
+  const repo = await gitFixtureWithUpstream(root);
+  const env = { ...defaultEnvironment(home), HISTFILE: path.join(root, 'isolated-history') };
+  const launch = await prepareShell({ directory: path.join(root, 'integration'), nonce: 'git-prompt-bash', home, env, shell: '/bin/bash', platform: 'linux' });
+  const child = spawn('/usr/bin/python3', ['-c', PTY_BRIDGE, JSON.stringify({ cwd: repo, shell: launch.shell, args: launch.args })], { cwd: repo, env: launch.env, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => child.kill('SIGKILL'));
+  let visible = '';
+  const parser = new PromptParser('git-prompt-bash', () => {});
+  child.stdout.on('data', data => { visible += parser.feed(data.toString()); });
+  child.on('error', error => assert.fail(error));
+  const plain = () => visible.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  await waitFor(() => /git:\(/.test(plain()), `bash never showed the git prompt segment: ${plain()}`);
+  assert.match(plain(), /git:\(main → origin\/main ↑1\) ❯/, plain());
+});
+
+test('MULLION_GIT_PROMPT=0 opts out in a real interactive shell', { skip: process.platform === 'win32' || !require('node:fs').existsSync('/bin/zsh') || !require('node:fs').existsSync('/usr/bin/python3') }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mullion-git-prompt-optout-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home');
+  await fs.mkdir(home);
+  const repo = await gitFixtureWithUpstream(root);
+  const env = { ...defaultEnvironment(home), HISTFILE: path.join(root, 'isolated-history'), MULLION_GIT_PROMPT: '0' };
+  delete env.ZDOTDIR;
+  const launch = await prepareShell({ directory: path.join(root, 'integration'), nonce: 'git-prompt-optout', home, env, shell: '/bin/zsh', platform: 'linux' });
+  const child = spawn('/usr/bin/python3', ['-c', PTY_BRIDGE, JSON.stringify({ cwd: repo, shell: launch.shell, args: launch.args })], { cwd: repo, env: launch.env, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => child.kill('SIGKILL'));
+  let visible = '';
+  const parser = new PromptParser('git-prompt-optout', () => {});
+  child.stdout.on('data', data => { visible += parser.feed(data.toString()); });
+  child.on('error', error => assert.fail(error));
+  const plain = () => visible.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  await waitFor(() => /❯/.test(plain()), `zsh never reached a prompt: ${plain()}`);
+  await new Promise(resolve => setTimeout(resolve, 300)); // Give a (not-expected) git segment time to appear.
+  assert.doesNotMatch(plain(), /git:\(/, 'MULLION_GIT_PROMPT=0 must suppress the segment even inside a real git repository');
 });

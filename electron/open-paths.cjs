@@ -12,6 +12,14 @@ function isFlag(value) {
   return typeof value === 'string' && value.startsWith('-');
 }
 
+// `mullion-terminal://…` links reach a Windows/Linux launch as argv too; they
+// are parsed (strictly) by open-url.cjs, never treated as relative paths.
+function isUrlArgument(value) {
+  return typeof value === 'string' && /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+}
+
+const OPEN_MODE_SWITCH = /^--open-mode=(tab|window)$/;
+
 /**
  * Resolves a single candidate to an absolute, existing file or directory, or
  * returns null when it isn't one (a flag, a relative path that resolves
@@ -24,7 +32,7 @@ function isFlag(value) {
  * @returns {{ path: string, isDirectory: boolean } | null}
  */
 function resolveOpenTarget(value, cwd = process.cwd()) {
-  if (typeof value !== 'string' || !value || isFlag(value)) return null;
+  if (typeof value !== 'string' || !value || isFlag(value) || isUrlArgument(value)) return null;
   const absolute = path.isAbsolute(value) ? value : path.resolve(cwd, value);
   let stats;
   try { stats = fs.statSync(absolute); } catch { return null; }
@@ -62,4 +70,36 @@ function pathsFromArgv(argv, options = {}) {
   return results;
 }
 
-module.exports = { pathsFromArgv, resolveOpenTarget };
+/**
+ * The `--open-mode=tab|window` switch the Windows Explorer verbs (and a CLI
+ * user) pass to choose where argv paths open; null when absent or invalid,
+ * so the "Open with Mullion Terminal opens in" setting decides. The last
+ * valid occurrence wins.
+ *
+ * @param {string[]} argv
+ * @returns {'tab' | 'window' | null}
+ */
+function openModeFromArgv(argv) {
+  if (!Array.isArray(argv)) return null;
+  let mode = null;
+  for (const value of argv) {
+    const match = typeof value === 'string' ? OPEN_MODE_SWITCH.exec(value) : null;
+    if (match) mode = match[1];
+  }
+  return mode;
+}
+
+/**
+ * `mullion-terminal://` URL arguments, in order, for open-url.cjs to validate.
+ *
+ * @param {string[]} argv
+ * @param {{ isPackaged?: boolean, limit?: number }} [options]
+ * @returns {string[]}
+ */
+function urlsFromArgv(argv, options = {}) {
+  if (!Array.isArray(argv)) return [];
+  const { isPackaged = true, limit = 10 } = options;
+  return argv.slice(isPackaged ? 1 : 2).filter(value => typeof value === 'string' && /^mullion-terminal:\/\//i.test(value)).slice(0, limit);
+}
+
+module.exports = { pathsFromArgv, resolveOpenTarget, openModeFromArgv, urlsFromArgv };

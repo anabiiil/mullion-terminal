@@ -1,6 +1,6 @@
 {
   "name": "mullion-terminal",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "A standalone terminal with Mullion's familiar look, local command learning and a directory sidebar.",
   "author": {
     "name": "Abdelrahman Nabil",
@@ -79,6 +79,14 @@
         "dmg",
         "zip"
       ],
+      "protocols": [
+        {
+          "name": "Mullion Terminal link",
+          "schemes": [
+            "mullion-terminal"
+          ]
+        }
+      ],
       "extendInfo": {
         "CFBundleDocumentTypes": [
           {
@@ -146,7 +154,18 @@
       ],
       "executableArgs": [
         "%F"
-      ]
+      ],
+      "desktop": {
+        "entry": {
+          "Actions": "NewWindow;"
+        },
+        "desktopActions": {
+          "NewWindow": {
+            "Name": "New Window",
+            "Exec": "mullion-terminal --open-mode=window %F"
+          }
+        }
+      }
     },
     "extraResources": [
       {
@@ -158,8 +177,12 @@
         "to": "README.md"
       },
       {
-        "from": "electron/resources/Open in Mullion Terminal.workflow",
-        "to": "Open in Mullion Terminal.workflow"
+        "from": "electron/resources/New Mullion Terminal Tab Here.workflow",
+        "to": "New Mullion Terminal Tab Here.workflow"
+      },
+      {
+        "from": "electron/resources/New Mullion Terminal Window Here.workflow",
+        "to": "New Mullion Terminal Window Here.workflow"
       }
     ]
   }

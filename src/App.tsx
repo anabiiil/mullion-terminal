@@ -1,22 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Terminal, FolderTree, History, Settings as SettingsIcon, Plus, X, Star, Search, Copy, Check, Minus, Square, FolderOpen, FolderPlus, Trash2 } from 'lucide-react';
+import { Terminal, FolderTree, History, Settings as SettingsIcon, Plus, X, Star, Search, Copy, Check, Minus, Square, FolderOpen, FolderPlus, Trash2, AppWindow } from 'lucide-react';
 import type { Bootstrap, HistoryEntry, SessionInfo, Settings } from './types';
 import ShellPane, { type ShellHandle } from './ShellPane';
 import DirectoryTree from './DirectoryTree';
 import SettingsPanel from './SettingsPanel';
 import CommandText from './CommandText';
 import EditorLauncher from './EditorLauncher';
+import StatusStrip from './StatusStrip';
+import BranchMenu from './BranchMenu';
 import { frequentCommands, isBasicCommand } from './completion';
 import { subscribe, latestSessionState } from './events';
 import { commonAncestor, containsPath } from './explorer-path';
 import { nanoEditCommand } from './tree-actions';
 import MarkdownPreview from './MarkdownPreview';
 import { isMarkdownPath } from './markdown';
+import { isNewWindowShortcut } from './keys';
+import { cssVariables, defaultAppearance } from './appearance';
 
-const defaults: Settings = { autoComplete: true, showSuggestions: true, fontSize: 13, theme: 'dark', showHiddenFiles: false, finderQuickAction: true };
+const defaults: Settings = { autoComplete: true, showSuggestions: true, fontSize: 13, theme: 'dark', showHiddenFiles: false, finderQuickAction: true, openWithTarget: 'tab', appearance: defaultAppearance('dark') };
 function basename(path: string) { return path.split(/[\\/]/).filter(Boolean).at(-1) ?? 'Terminal'; }
 // App-level shortcuts are Cmd on macOS and Ctrl+Shift elsewhere (plain Ctrl+T/W/B stay with the shell).
-function shortcutLabel(platform: string | undefined, key: 'T' | 'W' | 'B') { return platform === 'darwin' ? `⌘${key}` : `Ctrl+Shift+${key}`; }
+function shortcutLabel(platform: string | undefined, key: 'T' | 'W' | 'B' | 'N') { return platform === 'darwin' ? `⌘${key}` : `Ctrl+Shift+${key}`; }
 function settingsShortcutLabel(platform: string | undefined) { return platform === 'darwin' ? '⌘,' : 'Ctrl+,'; }
 function compactPath(path: string, home: string, platform?: string) {
   const separator = platform === 'win32' ? '\\' : '/';
@@ -43,8 +47,13 @@ export default function App() {
   const [preview, setPreview] = useState<{ path: string; fragment?: string; sessionId: string } | null>(null);
   const [undo, setUndo] = useState<HistoryEntry | null>(null);
   const [quickMenu, setQuickMenu] = useState<{ command: string; x: number; y: number } | null>(null);
+  // Opened by clicking the branch name in the active session's prompt (`git:(branch)`; see
+  // ShellPane's link provider). Always targets the active session — a click can only come
+  // from the terminal the user is looking at.
+  const [branchMenu, setBranchMenu] = useState<{ x: number; y: number } | null>(null);
   const handles = useRef(new Map<string, ShellHandle>());
   const settingsRevision = useRef(0);
+  const settingsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Session id -> file path, for an "Open with Mullion Terminal" file target
   // whose tab was just created: opened once that session reports ready.
@@ -77,6 +86,8 @@ export default function App() {
     if (!api) return;
     const unsubscribe = subscribe(event => {
       if (event.type === 'history') setHistory(event.history);
+      // Another window saved its settings; this one follows (and drops any stale in-flight save result).
+      if (event.type === 'settings') { settingsRevision.current++; cancelPendingSave(); setSettings(event.settings); }
       if (event.type === 'state') {
         setSessions(value => value.map(session => session.id === event.session.id ? event.session : session));
         if (event.session.ready) setExplorerRoots(value => {
@@ -116,6 +127,12 @@ export default function App() {
     }
   }, [sessions, activeId]);
   useEffect(() => { document.documentElement.dataset.theme = settings.theme; }, [settings.theme]);
+  // Settings › Appearance: the chosen palette and fonts override the stylesheet's tokens, live.
+  // The logo keeps its own fixed colors (see .brand-mark).
+  useEffect(() => {
+    const root = document.documentElement;
+    for (const [name, value] of Object.entries(cssVariables(settings.appearance, settings.theme))) root.style.setProperty(name, value);
+  }, [settings.appearance, settings.theme]);
   useEffect(() => { if (!error) return; const timer = setTimeout(() => setError(''), 9000); return () => clearTimeout(timer); }, [error]);
 
   async function closeSession(id: string) {
@@ -137,6 +154,11 @@ export default function App() {
       const key = event.key.toLowerCase();
       // Ctrl+, has no shell meaning, so Settings keeps it on every platform.
       if (key === ',' && (event.metaKey || event.ctrlKey) && !event.shiftKey) { event.preventDefault(); setSettingsOpen(value => !value); return; }
+      // New Window: Cmd+N / Ctrl+Shift+N, plus plain Ctrl+N unless a full-screen program (nano, vim) owns the terminal.
+      const handle = handles.current.get(latest.current.activeId);
+      if (!latest.current.settingsOpen && isNewWindowShortcut(event, { platform: bootstrap?.platform, alternateScreen: handle?.isAlternateScreen() ?? false })) {
+        event.preventDefault(); void newWindow(); return;
+      }
       if (!mod) return;
       if (key === ',') { event.preventDefault(); setSettingsOpen(value => !value); }
       else if (!latest.current.settingsOpen && key === 't') { event.preventDefault(); void create(latest.current.home || undefined, latest.current.home || undefined); }
@@ -153,14 +175,15 @@ export default function App() {
     try { await api!.changeDirectory(active.id, path); handles.current.get(active.id)?.focus(); return true; }
     catch (value) { reportError(value); return false; }
   }
+  // "Open folder" adds a tab at the chosen folder (its tree rooted there) and leaves the current tab where it is.
   async function choose() {
     try {
       const path = await api!.chooseDirectory();
-      if (!path) return;
-      if (active?.ready && active.alive) {
-        if (await navigate(path)) setExplorerRoots(value => ({ ...value, [active.id]: path }));
-      } else await create(path, path);
+      if (path) await create(path, path);
     } catch (value) { reportError(value); }
+  }
+  async function newWindow() {
+    try { await window.terminalAPI?.newWindow(); } catch (value) { reportError(value); }
   }
   function fill(command: string) { if (active?.ready && active.alive) handles.current.get(active.id)?.insert(command); }
   // Windows shells rarely have nano, so a double-clicked file there still opens
@@ -184,10 +207,24 @@ export default function App() {
     if (!active) return;
     api!.copyText(active.cwd).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(reportError);
   }
-  async function updateSettings(value: Settings) {
-    const previous = settings;
+  function cancelPendingSave() {
+    if (settingsSaveTimer.current) { clearTimeout(settingsSaveTimer.current); settingsSaveTimer.current = null; }
+  }
+  // `defer` coalesces a burst of edits (dragging a color picker, typing a font name) into one
+  // save: the change shows at once, and only the last value is written ~180ms later.
+  async function updateSettings(value: Settings, { defer = false } = {}) {
+    const previous = latest.current.settings;
     const revision = ++settingsRevision.current;
     setSettings(value);
+    latest.current.settings = value;
+    cancelPendingSave();
+    if (defer) {
+      settingsSaveTimer.current = setTimeout(() => { settingsSaveTimer.current = null; void saveSettings(value, previous, revision); }, 180);
+      return;
+    }
+    await saveSettings(value, previous, revision);
+  }
+  async function saveSettings(value: Settings, previous: Settings, revision: number) {
     try {
       const saved = await api!.saveSettings(value);
       if (settingsRevision.current === revision) setSettings(saved);
@@ -224,6 +261,16 @@ export default function App() {
     return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKeyEsc); };
   }, [quickMenu]);
   useEffect(() => () => { if (undoTimer.current) clearTimeout(undoTimer.current); }, []);
+  // A deferred save still lands if the window closes first.
+  useEffect(() => {
+    const flush = () => { if (settingsSaveTimer.current) { cancelPendingSave(); void api?.saveSettings(latest.current.settings); } };
+    window.addEventListener('beforeunload', flush);
+    return () => window.removeEventListener('beforeunload', flush);
+  }, [api]);
+  // A click always targets the active session; if the tab changes (or that session ends)
+  // before the user picks a branch, the menu no longer applies and must not linger.
+  useEffect(() => { setBranchMenu(null); }, [activeId]);
+  useEffect(() => { if (branchMenu && !active?.alive) setBranchMenu(null); }, [branchMenu, active?.alive]);
   // Basic commands stay stored for suggestions but are never listed or counted.
   const listedHistoryCount = history.filter(entry => !isBasicCommand(entry.command)).length;
   const visibleHistory = (historySort === 'frequent' ? frequentCommands(history, 1000) : [...history].filter(entry => !isBasicCommand(entry.command)).sort((a, b) => b.lastUsed - a.lastUsed)).filter(entry => entry.command.toLowerCase().includes(historySearch.toLowerCase()));
@@ -242,7 +289,8 @@ export default function App() {
           <button className={`current-path ${copied ? 'copied' : ''}`} aria-label="Copy current path" title={active.cwd} onClick={copyPath}><span>{compactPath(active.cwd, home, active.platform)}</span>{copied ? <Check size={12} /> : <Copy size={12} />}</button>
           <button className="toolbar-button open-current-folder" aria-label="Open current folder in file manager" title={bootstrap?.platform === 'darwin' ? 'Open in Finder' : bootstrap?.platform === 'win32' ? 'Open in File Explorer' : 'Open in file manager'} onClick={() => api!.openDirectory(active.cwd).catch(reportError)}><FolderOpen size={16} /></button>
         </>}
-        <button className="toolbar-button" aria-label="Open folder" title="Open folder" disabled={!api} onClick={choose}><FolderPlus size={16} /></button>
+        <button className="toolbar-button" aria-label="Open folder in a new tab" title="Open folder in a new tab" disabled={!api} onClick={choose}><FolderPlus size={16} /></button>
+        <button className="toolbar-button" aria-label="New window" title={`New window · ${shortcutLabel(bootstrap?.platform, 'N')}`} disabled={!api} onClick={newWindow}><AppWindow size={16} /></button>
         <button className="toolbar-button" aria-label="Settings" title={`Settings · ${settingsShortcutLabel(bootstrap?.platform)}`} onClick={() => setSettingsOpen(true)}><SettingsIcon size={16} /></button>
         <span className={`shell-state ${active?.ready ? 'ready' : ''}`} aria-label={active?.alive ? active.ready ? 'Shell ready' : 'Command running' : 'No active shell'} title={active?.alive ? active.ready ? 'Shell ready' : 'Command running' : 'No active shell'}><i /></span>
       </div>
@@ -262,10 +310,11 @@ export default function App() {
           <div className="terminal-tabs">{sessions.map((session, index) => <div role="tab" aria-selected={session.id === activeId} tabIndex={0} className={`terminal-tab ${session.id === activeId ? 'active' : ''} ${!session.alive ? 'dead' : ''}`} key={session.id} onClick={() => setActiveId(session.id)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') setActiveId(session.id); }}><i /><span>{session.cwd === home ? '~' : basename(session.cwd)} <em>{index + 1}</em></span><button aria-label={`Close terminal ${index + 1}`} onClick={event => { event.stopPropagation(); void closeSession(session.id); }}><X size={11} /></button></div>)}</div>
           <button className="new-tab" aria-label="New terminal tab" title={`New tab at Home · ${shortcutLabel(bootstrap?.platform, 'T')}`} disabled={!api || !bootstrap || creating} onClick={() => create(home, home)}><Plus size={15} /></button>
           <div className="tab-bar-spacer" />
+          {active && api && <StatusStrip session={active} />}
           {active && <span className="shell-chip">{active.shell.replace(/.*[\\/]/, '').replace(/\.exe$/i, '')}</span>}
         </div>
         <div className={`terminal-body ${active ? 'has-quick-commands' : ''}`}>
-          {sessions.map(session => <ShellPane key={session.id} session={session} active={session.id === activeId} settings={settings} history={history} register={register} onHistory={setHistory} onError={reportError} />)}
+          {sessions.map(session => <ShellPane key={session.id} session={session} active={session.id === activeId} settings={settings} history={history} register={register} onHistory={setHistory} onError={reportError} onBranchClick={(x, y) => setBranchMenu({ x, y })} />)}
           {active && <div className="quick-commands" role="toolbar" aria-label={quickCommands.length ? 'Most-used commands' : 'Quick commands'}>
             <History size={13} className="quick-commands-icon" aria-hidden="true" />
             {quickCommands.length > 0 && <span className="quick-commands-label">Most used</span>}
@@ -284,6 +333,8 @@ export default function App() {
       </main>
     </div>
     {settingsOpen && <SettingsPanel settings={settings} update={updateSettings} close={() => { setSettingsOpen(false); handles.current.get(activeId)?.focus(); }} clearHistory={() => api?.clearHistory().then(setHistory).catch(reportError)} platform={bootstrap?.platform} />}
+    {branchMenu && active && <BranchMenu sessionId={active.id} platform={active.platform} anchor={branchMenu} onError={reportError}
+      runInShell={(command, options) => handles.current.get(active.id)?.run(command, options) ?? false} onClose={() => setBranchMenu(null)} />}
     {undo && <div className="undo-toast" role="status"><span>Removed <code>{undo.command}</code></span><button onClick={undoDelete}>Undo</button></div>}
     {error && <div className="toast" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}><X size={14} /></button></div>}
   </div>;

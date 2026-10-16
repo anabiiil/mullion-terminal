@@ -241,3 +241,67 @@ test('OFF exact filesystem commands prioritize operands over coincidental comman
   assert.equal(rankSuggestions('rm', [], [candidate('rmdir'), file], '/work', 8, 'linux', false)[0].value, file.value);
   assert.equal(rankSuggestions('rm', [historyEntry('rm old-file.txt')], [candidate('rmdir'), file], '/work', 8, 'linux', false)[0].kind, 'history');
 });
+
+// A visited directory offered by electron/completions.cjs always has its full (possibly
+// `~`-abbreviated) path as its label, unlike a live filesystem entry whose label is just its
+// own bare name — see electron/completions.cjs's visitedDirectoryCandidates().
+const visited = (value: string, label: string, detail = 'Visited 5×'): CompletionCandidate => ({ value, label, kind: 'directory', detail });
+
+test('a visited directory surfaces in the popup for a `~`-prefixed typed path, even though its value was expanded to an absolute path', () => {
+  const deep = visited('cd /Users/test/Work/Projects/Alpha/', '~/Work/Projects/Alpha');
+  const result = rankSuggestions('cd ~/Wo', [], [deep], '/Users/test', 8, 'darwin', true);
+  assert.equal(result[0].value, deep.value);
+  assert.equal(result[0].kind, 'directory');
+  // Matching is prefix-only: a visited directory that doesn't start with what was typed is absent.
+  assert.deepEqual(rankSuggestions('cd ~/Zz', [], [deep], '/Users/test', 8, 'darwin', true), []);
+});
+
+test('a visited directory surfaces for a bare directory name (no slash) with a cd-like command, by basename', () => {
+  const deep = visited('cd /Users/test/Work/Projects/Alpha/', '~/Work/Projects/Alpha');
+  assert.equal(rankSuggestions('cd Al', [], [deep], '/Users/test', 8, 'darwin', true)[0].value, deep.value);
+  // Case-insensitive on darwin/win32, case-sensitive elsewhere.
+  assert.equal(rankSuggestions('cd AL', [], [deep], '/Users/test', 8, 'darwin', true)[0].value, deep.value);
+  assert.deepEqual(rankSuggestions('cd AL', [], [deep], '/Users/test', 8, 'linux', true), []);
+});
+
+test('a visited directory ranks above a plain next-segment filesystem candidate for the same typed prefix', () => {
+  const deep = visited('cd /Users/test/Work/Projects/Alpha/', '~/Work/Projects/Alpha');
+  // A real next-segment candidate's label is just the entry's own name, unlike a visited
+  // directory's full-path label — see electron/completions.cjs.
+  const nextSegment: CompletionCandidate = { value: "cd 'Work/'", label: 'Work/', kind: 'directory' };
+  const result = rankSuggestions('cd ~/Wo', [], [deep, nextSegment], '/Users/test', 8, 'darwin', true);
+  assert.deepEqual(result.map(item => item.value), [deep.value, nextSegment.value]);
+});
+
+test('a plain next-segment filesystem candidate still surfaces for a `~`-prefixed typed path on its own', () => {
+  // Regression check: matching a `~/…` typed prefix against an (expanded) absolute candidate
+  // value must not depend on a visited directory being present at all.
+  const nextSegment = { value: 'cd /Users/test/Documents/', label: 'Documents/', kind: 'directory' as const };
+  assert.equal(rankSuggestions('cd ~/Doc', [], [nextSegment], '/Users/test', 8, 'darwin', true)[0]?.value, nextSegment.value);
+});
+
+test('inline ghost for a visited directory shows the remainder of its full path, for both `~` and bare-name typing', () => {
+  const deep = visited('cd /Users/test/Work/Projects/Alpha/', '~/Work/Projects/Alpha');
+  assert.equal(inlineCompletion('cd ~/Wo', deep), 'rk/Projects/Alpha');
+  assert.equal(inlineCompletion('cd Al', deep), 'pha');
+  // An absolute typed prefix already shares a literal prefix with the (also absolute) value, so
+  // it's resolved by ordinary value comparison rather than the label fallback above.
+  const absolute = candidate('cd /Users/test/Work/Projects/Alpha/', 'directory');
+  assert.equal(inlineCompletion('cd /Us', absolute), 'ers/test/Work/Projects/Alpha/');
+});
+
+test('a bare typed prefix never lets a visited directory\'s full-path label outrank a live relative child of cwd (regression)', () => {
+  // cwd = /Volumes/anabil/Work, which has a real child "Projects/"; a visited directory
+  // elsewhere also happens to have been recorded as /Volumes/anabil/Work/Projects (what the
+  // live backend already drops per completions.cjs, but rankSuggestions must never undo that
+  // even if a full-path candidate ever reaches it some other way).
+  const nextSegment: CompletionCandidate = { value: 'cd Projects/', label: 'Projects/', kind: 'directory' };
+  const fullPath = visited('cd /Volumes/anabil/Work/Projects/', '/Volumes/anabil/Work/Projects');
+  const result = rankSuggestions('cd Projec', [], [fullPath, nextSegment], '/Volumes/anabil/Work', 8, 'darwin', false);
+  assert.equal(result[0].value, nextSegment.value, JSON.stringify(result));
+  // Its ghost must be the relative remainder, never the absolute replacement's.
+  assert.equal(inlineCompletion('cd Projec', result[0]), 'ts/');
+  // A full-path candidate whose ghost would be empty (it shares no literal suffix relationship
+  // with the typed token at all) can never be ranked first either.
+  for (const item of result) assert.notEqual(inlineCompletion('cd Projec', item), '');
+});

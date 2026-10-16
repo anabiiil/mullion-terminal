@@ -47,7 +47,9 @@ Mullion Terminal is a real interactive shell in a window that looks and feels li
 - The `+` button and the new-tab shortcut (`Cmd+T` on macOS, `Ctrl+Shift+T` on Windows/Linux) open a new, independent tab at your home directory.
 - A compact path chip in the titlebar shows the current folder; click it to copy the absolute path.
 - The adjacent folder button opens the current directory in Finder, File Explorer or the Linux file manager.
-- An **Open folder** button lets you start or move a tab to any directory.
+- An **Open folder** button opens any directory in a new tab, with the sidebar's tree rooted there; the tab you were in stays where it was.
+- **New window** (the titlebar button, `Cmd+N` on macOS, `Ctrl+Shift+N` on Windows/Linux, or plain `Ctrl+N` anywhere) opens another window with its own tabs, stepped down and to the right of the current one. Each window's shells belong to it — closing a window ends only its own tabs — while command history and settings are shared by every window.
+- When a tab's current folder is inside a git repository, the prompt itself shows the branch right after the path — `git:(main → origin/main ↑1 ↓2)`, with the upstream and ahead/behind counts only when they apply, and the commit SHA instead of a name when `HEAD` is detached. The branch name is clickable: it opens a filterable dropdown of local and remote branches, and picking one runs `git switch` in the real shell, so you see git's own output, including any conflict. Opt out of the prompt segment with `MULLION_GIT_PROMPT=0`. The tab bar also shows a changed-files count (`3 • +12 -4`) whenever the working tree actually has changes.
 
 **Suggestions & auto-complete**
 - Suggestions combine shell commands, filesystem paths, and commands you've previously run in this app.
@@ -101,8 +103,9 @@ Mullion Terminal is a real interactive shell in a window that looks and feels li
 </p>
 
 **Settings & appearance**
-- Light and dark themes, in Mullion's palette.
-- Adjustable terminal font size, and a toggle to show hidden files in the tree.
+- Light and dark themes, in Mullion's palette, plus Dracula, One Dark and Solarized Light presets.
+- Customize every color — window, panels, text, accent, terminal palette, and the prompt's path, git branch and flag colors — and the terminal and interface fonts, with a live preview and a one-click **Restore default appearance**.
+- A toggle to show hidden files in the tree.
 - Learning stays on this device — see [Where data is stored](#where-data-is-stored).
 
 ## Install
@@ -141,13 +144,19 @@ The installer isn't signed, so Windows SmartScreen may show **Windows protected 
 
 ## Open with Mullion Terminal
 
-Right-clicking a file or folder can open it straight into Mullion Terminal: a folder opens a new tab there, and a file opens a new tab in its parent folder with the file opened the same way double-clicking it in the sidebar does (Markdown in the preview, everything else in `nano`). Dropping a file or folder on the app also works. Mullion Terminal never becomes the default app for anything — it only ever appears as an extra option.
+Right-clicking a file or folder can open it straight into Mullion Terminal: a folder opens a new tab there, and a file opens a new tab in its parent folder with the file opened the same way double-clicking it in the sidebar does (Markdown in the preview, everything else in `nano`). Dropping a file or folder on the app also works. Mullion Terminal never becomes the default app for any file type — it only ever appears as an extra option.
 
-- **macOS:** right-click any file or folder in Finder and choose **Quick Actions ▸ Open in Mullion Terminal** (also under **Services**). This works for every file and folder, whatever its type; the app installs it for the current user at `~/Library/Services` on launch, and you can turn it off in Settings. **Open With ▸ Mullion Terminal** is also offered for text and source files (plain text, Markdown, JSON, YAML, XML, HTML, CSS, logs, shell/Python/PHP/JavaScript scripts, C/C++/Swift sources, Makefiles) and for folders — the app claims those specific types rather than every file, since Finder hides apps that claim everything from **Open With**. Dropping a file or folder on the Dock icon always works too.
-- **Windows:** right-click a file, or a folder, or empty space inside a folder, and choose **Open with Mullion Terminal** — the installer adds this to the right-click menu for the current user.
-- **Linux:** most file managers show **Open With ▸ Mullion Terminal** for any file, including from the AppImage, once it's been run at least once.
+You choose where it opens: as a **new tab** in the window you used last, or in a **new window** of its own (holding just that tab).
 
-You can also open a specific path from the command line, e.g. `mullion-terminal ~/code/project`.
+- **macOS:** right-click any file or folder in Finder and choose **Quick Actions ▸ New Mullion Terminal Tab Here** or **New Mullion Terminal Window Here** (also under **Services**). These work for every file and folder, whatever its type; the app installs them for the current user at `~/Library/Services` on launch (replacing the single **Open in Mullion Terminal** action of earlier versions), and you can turn them off in Settings. **Open With ▸ Mullion Terminal** is also offered for text and source files (plain text, Markdown, JSON, YAML, XML, HTML, CSS, logs, shell/Python/PHP/JavaScript scripts, C/C++/Swift sources, Makefiles) and for folders — the app claims those specific types rather than every file, since Finder hides apps that claim everything from **Open With**. Dropping a file or folder on the Dock icon always works too.
+- **Windows:** right-click a file, or a folder, or empty space inside a folder, and choose **Open in Mullion Terminal (new tab)** or **Open in new Mullion Terminal window** — the installer adds both to the right-click menu for the current user.
+- **Linux:** most file managers show **Open With ▸ Mullion Terminal** for any file, including from the AppImage, once it's been run at least once. The app launcher's right-click menu also offers **New Window** (installed `.deb` package).
+
+**Open With**, a Dock drop and a path on the command line don't say which they want, so they follow the **"Open with Mullion Terminal" opens in** setting (New tab by default).
+
+You can also open a specific path from the command line, e.g. `mullion-terminal ~/code/project`, or `mullion-terminal --open-mode=window ~/code/project` for a new window.
+
+The Quick Actions hand paths to the app as `mullion-terminal://open?mode=tab|window&path=…` links. The app only ever accepts that exact form — an absolute path that exists, a mode of `tab` or `window`, nothing else — so a link can at most open a tab or window at an existing file or folder; it can never run a command.
 
 ## Quick start
 
@@ -182,11 +191,14 @@ Toggle **Auto-complete** in Settings to switch between two modes:
 
 In both modes, suggestions blend your command history (ranked by frequency and recency, with pinned and current-directory commands first) with filesystem paths and shell commands. `cd`, `pushd`, `popd` and their PowerShell equivalents are never suggested from history — folder-name completion after typing `cd ` still works, from the live directory listing rather than something you ran before.
 
+The app also remembers every folder a session's working directory actually changes to — a typed `cd`, a sidebar double-click, Open-with — and offers the full path back, not just its next segment. Once you've visited `/Volumes/anabil/Work/Projects`, typing `/Volumes/anabil/Work/Proj` again (or `~/Work/Proj` with your home directory abbreviated, or just `Proj` after `cd`) suggests that full path, labeled with how many times you've been there. It's ranked above a plain next-segment folder listing for the same text, and still shows up as inline ghost text with auto-complete off. The home directory itself, the filesystem root, and the app's own temporary/scratch folders are never remembered this way, and — like learned `cd` commands — a visited directory never appears in the history sidebar or the "Most used" bar, which only ever list commands.
+
 ## Keyboard shortcuts
 
 | Action | macOS | Windows / Linux |
 | --- | --- | --- |
 | New terminal tab | `Cmd+T` | `Ctrl+Shift+T` |
+| New window | `Cmd+N` · `Ctrl+N` (not inside nano/vim/less) | `Ctrl+Shift+N` · `Ctrl+N` (not inside nano/vim/less) |
 | Close active tab | `Cmd+W` | `Ctrl+Shift+W` |
 | Toggle Files sidebar | `Cmd+B` | `Ctrl+Shift+B` |
 | Settings | `Cmd+,` / `Ctrl+,` | `Ctrl+,` |
@@ -198,7 +210,7 @@ In both modes, suggestions blend your command history (ranked by frequency and r
 | Dismiss suggestions | `Escape` | `Escape` |
 | Shell history, with suggestions closed | `↑` / `↓` | `↑` / `↓` |
 
-Plain `Ctrl+T`, `Ctrl+W` and `Ctrl+B` are left for the shell and full-screen editors (e.g. readline/ZLE word navigation, nano's own bindings) — on Windows and Linux the app's own tab and sidebar shortcuts use `Ctrl+Shift` instead. `Ctrl+C` keeps the shell's normal interrupt behavior when nothing is selected — it only copies when there's a selection (including inside nano/vim). `Ctrl+V` pastes at an idle shell prompt, but a full-screen program like nano or vim receives it unchanged (nano: next page, vim: visual block); `Cmd+V` and `Ctrl+Shift+V` always paste. Ctrl shortcuts work on every platform, including macOS; `Ctrl+A`, `Ctrl+E`, `Ctrl+U` and unshifted `Ctrl+K` keep their normal shell-editing behavior (readline/ZLE), rather than being captured by the app.
+Plain `Ctrl+T`, `Ctrl+W` and `Ctrl+B` are left for the shell and full-screen editors (e.g. readline/ZLE word navigation, nano's own bindings) — on Windows and Linux the app's own tab and sidebar shortcuts use `Ctrl+Shift` instead. `Ctrl+C` keeps the shell's normal interrupt behavior when nothing is selected — it only copies when there's a selection (including inside nano/vim). `Ctrl+V` pastes at an idle shell prompt, but a full-screen program like nano or vim receives it unchanged (nano: next page, vim: visual block); `Cmd+V` and `Ctrl+Shift+V` always paste. Ctrl shortcuts work on every platform, including macOS; `Ctrl+A`, `Ctrl+E`, `Ctrl+U` and unshifted `Ctrl+K` keep their normal shell-editing behavior (readline/ZLE), rather than being captured by the app. The exception is plain `Ctrl+N`, which opens a new window at the shell prompt (use `↓` for the shell's "next history"); inside a full-screen program such as nano, vim or less it still reaches the program ("next line").
 
 ## Editors & IDEs
 
@@ -216,14 +228,27 @@ Discovery looks in the usual install locations for each platform — macOS `/App
 
 ## Settings
 
-Open Settings with the gear icon or `Cmd/Ctrl+,`:
+Open Settings with the gear icon or `Cmd/Ctrl+,`. **General**:
 
 - **Auto-complete** — popup suggestions vs. inline ghost text (see [above](#suggestions--auto-complete)).
 - **Suggestions while typing** — turn suggestions off entirely.
-- **Theme** — light or dark, in Mullion's palette.
-- **Terminal font size** — 11–20px.
+- **Theme** — Mullion Light or Mullion Dark.
 - **Show hidden files** — include dotfiles in the directory tree.
+- **"Open with Mullion Terminal" opens in** — New tab (in the window you used last) or New window, for Open With, Dock drops and paths on the command line.
+- **Finder Quick Actions** (macOS) — show or hide **New Mullion Terminal Tab Here** / **New Mullion Terminal Window Here** in Finder's right-click menu.
 - **Clear history** — removes the app's saved commands (two-step confirmation).
+
+**Appearance** (everything except the logo, which keeps its own colors):
+
+- **Restore default appearance** — at the top: puts the preset, every color and all fonts back to Mullion Light/Dark (whichever base you're on) after a quick inline confirm, with **Undo** for a few seconds afterwards.
+- **Preview** — a sample prompt line (`…/Packages/mullion git:(main → origin/main ↑1) ❯ git commit --amend -m "msg"`) drawn with your colors and font.
+- **Preset** — Mullion Dark, Mullion Light, Dracula, One Dark or Solarized Light. A preset fills every color; editing any color switches to **Custom**.
+- **Fonts** — terminal font (any installed font, with suggestions such as SF Mono, Menlo, JetBrains Mono, Fira Code, Cascadia Code and Consolas; the built-in monospace stack stays as fallback), terminal font size (10–24px), line height (1.0–1.8) and interface font.
+- **Interface colors** — background, panels, text, secondary text, accent, borders, and command flags in history lists. In-between shades (hover rows, insets, faint text, the soft accent) are derived from these.
+- **Terminal colors** — background, text, cursor and selection, plus all 16 ANSI colors under **Advanced**.
+- **Prompt colors** — path, `git:( )` and upstream, branch, ahead ↑, behind ↓, the `❯` and the flag highlight while typing (zsh) / PowerShell parameters. Left on **Default**, each follows the terminal palette as before. Shells that are already open pick up a change at their next prompt.
+
+Every color row has a color picker and a `#rrggbb` field, and each section has its own **Reset**. Changes apply live to every window and terminal.
 
 ## Where data is stored
 

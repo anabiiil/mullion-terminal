@@ -29,6 +29,80 @@ function isInjectedCommand(command) {
   return typeof command === 'string' && INJECTED_COMMAND_PATTERN.test(command.trim());
 }
 
+/** Renders an absolute path with its home directory abbreviated to `~`, for display only. */
+function abbreviateHome(directory, home, platform) {
+  if (!home) return directory;
+  const separator = platform === 'win32' ? '\\' : '/';
+  const stripTrailing = value => value.replace(/[\\/]+$/, '');
+  const normalizedHome = stripTrailing(home);
+  const normalizedDirectory = stripTrailing(directory);
+  const compare = platform === 'win32' || platform === 'darwin'
+    ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b) => a === b;
+  if (compare(normalizedDirectory, normalizedHome)) return '~';
+  const prefix = normalizedHome + separator;
+  const startsWithHome = platform === 'win32' || platform === 'darwin'
+    ? normalizedDirectory.toLowerCase().startsWith(prefix.toLowerCase()) : normalizedDirectory.startsWith(prefix);
+  return startsWithHome ? `~${separator}${normalizedDirectory.slice(prefix.length)}` : directory;
+}
+
+// Directory-changing commands only (not every command that merely accepts a directory
+// operand, like `rmdir`): these are the ones whose bare, slash-free argument ("cd Wo") should
+// also be checked against a previously visited directory's basename, not just the current
+// directory's real children.
+const CD_LIKE_COMMANDS = new Set(['cd', 'pushd']);
+const WINDOWS_CD_LIKE_COMMANDS = new Set(['cd', 'pushd', 'set-location', 'sl']);
+
+/**
+ * Matches previously visited directories (recorded by the main process whenever a session's
+ * cwd changes) against the path-like or bare-name token currently being typed, independent of
+ * the live filesystem. Returns up to `limit` candidates, each carrying the directory's absolute
+ * path (`insert`, to be quoted the same way as any other filesystem candidate), a home-abbreviated
+ * `label`, and the originating `entry` (for its visit `count`).
+ */
+function visitedDirectoryCandidates({ raw, commandName, cwd, home, platform, visitedDirectories, policy, limit = 5, hasLiveDirectoryMatch = false }) {
+  if (!raw || !Array.isArray(visitedDirectories) || !visitedDirectories.length) return [];
+  if (policy && policy.directories === false) return [];
+  const caseInsensitive = platform === 'win32' || platform === 'darwin';
+  const compare = value => caseInsensitive ? value.toLowerCase() : value;
+  const separator = /[\\/]/;
+  const isPathLike = raw.startsWith('/') || raw.startsWith('~') || raw.startsWith('./') || raw.startsWith('../')
+    || (platform === 'win32' && /^[A-Za-z]:[\\/]/.test(raw)) || separator.test(raw);
+  const name = platform === 'win32' ? commandName.toLowerCase() : commandName;
+  const bareNameMode = !isPathLike && (platform === 'win32' ? WINDOWS_CD_LIKE_COMMANDS : CD_LIKE_COMMANDS).has(name);
+  if (!isPathLike && !bareNameMode) return [];
+  // A bare, slash-free token's own directory is already a live candidate from the current
+  // directory's real children; a visited directory's basename is only ever a supplementary
+  // guess, and must never outrank (or even accompany) an actual live match for the same token.
+  if (bareNameMode && hasLiveDirectoryMatch) return [];
+  const stripTrailing = value => value.replace(/[\\/]+$/, '');
+  const cwdKey = compare(stripTrailing(cwd) || cwd);
+  const now = Date.now();
+  const matches = [];
+  for (const entry of visitedDirectories) {
+    if (!entry || typeof entry.path !== 'string' || !entry.path) continue;
+    const directoryPath = stripTrailing(entry.path) || entry.path;
+    if (compare(directoryPath) === cwdKey) continue; // Never suggest the directory you're already in.
+    let matched;
+    if (isPathLike) {
+      const candidateToken = raw.startsWith('~') ? abbreviateHome(directoryPath, home, platform) : directoryPath;
+      matched = compare(candidateToken).startsWith(compare(raw));
+    } else {
+      const baseName = directoryPath.split(separator).filter(Boolean).pop() || directoryPath;
+      matched = compare(baseName).startsWith(compare(raw));
+    }
+    if (!matched) continue;
+    const ageInDays = Math.max(0, now - entry.lastUsed) / 86_400_000;
+    const score = Math.log2(1 + entry.count) * 35 + 30 / (1 + ageInDays / 7);
+    matches.push({ entry, directoryPath, score });
+  }
+  matches.sort((a, b) => b.score - a.score || b.directoryPath.length - a.directoryPath.length);
+  return matches.slice(0, limit).map(({ entry, directoryPath }) => ({
+    insert: `${directoryPath}${platform === 'win32' ? '\\' : '/'}`,
+    label: abbreviateHome(directoryPath, home, platform),
+    count: entry.count,
+  }));
+}
+
 function tokenize(line, platform = process.platform) {
   const tokens = [];
   let start = -1;
@@ -138,7 +212,7 @@ function unsafeShellContext(line, platform) {
   return false;
 }
 
-async function complete({ line, cwd, platform = process.platform, environmentPath = process.env.PATH ?? '', home = os.homedir(), showHidden = false }) {
+async function complete({ line, cwd, platform = process.platform, environmentPath = process.env.PATH ?? '', home = os.homedir(), showHidden = false, visitedDirectories = [] }) {
   if (typeof line !== 'string' || line.length > 8192 || /[\x00-\x1f\x7f-\x9f]/.test(line)) return [];
   const tokens = tokenize(line, platform);
   let token = tokens[tokens.length - 1];
@@ -191,7 +265,20 @@ async function complete({ line, cwd, platform = process.platform, environmentPat
     const insert = /^~[\\/]/.test(value) ? pathApi.join(home, value.slice(2).replace(/[\\/]+$/, '')) + (isDirectory ? separator : '') : value;
     return { value: `${replacementPrefix}${quoteToken(insert, platform)}`, label: `${entry.name}${isDirectory ? separator : ''}`, kind: isDirectory ? 'directory' : 'file', detail: isDirectory ? 'Folder' : 'File' };
   }));
-  return results.filter(Boolean).sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || a.label.localeCompare(b.label)).slice(0, 40);
+  const filesystemResults = results.filter(Boolean).sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || a.label.localeCompare(b.label));
+  const hasLiveDirectoryMatch = filesystemResults.some(candidate => candidate.kind === 'directory');
+  const visited = visitedDirectoryCandidates({ raw, commandName: tokens[0]?.decoded || '', cwd, home, platform, visitedDirectories, policy, hasLiveDirectoryMatch })
+    .map(({ insert, label, count }) => ({ value: `${replacementPrefix}${quoteToken(insert, platform)}`, label, kind: 'directory', detail: `Visited ${count}×` }));
+  // Visited directories go first so they always survive the final cap below, even when a
+  // folder has many real children; the renderer re-ranks everything again regardless.
+  const merged = [];
+  const seen = new Set();
+  for (const candidate of [...visited, ...filesystemResults]) {
+    if (seen.has(candidate.value)) continue;
+    seen.add(candidate.value);
+    merged.push(candidate);
+  }
+  return merged.slice(0, 40);
 }
 
-module.exports = { quoteToken, directoryCommand, tokenize, complete, isInjectedCommand };
+module.exports = { quoteToken, directoryCommand, tokenize, complete, isInjectedCommand, abbreviateHome, visitedDirectoryCandidates };

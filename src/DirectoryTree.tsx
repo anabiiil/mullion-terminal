@@ -92,7 +92,7 @@ export default function DirectoryTree(props: Props) {
   const isSelectedRoot = !isCurrentRoot && selected !== null && samePath(props.root, selected, props.platform);
   const parent = parentPath(props.root, props.platform);
   return <>
-    <div className="sidebar-heading"><span>EXPLORER</span><div><button className="icon-button" title="Open a folder" aria-label="Open a folder" onClick={props.choose}><FolderPlus size={15} /></button><button className="icon-button" title="Refresh files" aria-label="Refresh files" onClick={() => setRefresh(value => value + 1)}><RefreshCw size={14} /></button></div></div>
+    <div className="sidebar-heading"><span>EXPLORER</span><div><button className="icon-button" title="Open a folder in a new tab" aria-label="Open a folder in a new tab" onClick={props.choose}><FolderPlus size={15} /></button><button className="icon-button" title="Refresh files" aria-label="Refresh files" onClick={() => setRefresh(value => value + 1)}><RefreshCw size={14} /></button></div></div>
     <div className={`explorer-root ${isCurrentRoot ? 'current' : ''} ${isSelectedRoot ? 'selected' : ''}`}><button className="icon-button" title="Browse parent folder" aria-label="Browse parent folder" disabled={!props.onRootChange || samePath(parent, props.root, props.platform)} onClick={() => props.onRootChange?.(parent)}><ArrowUp size={14} /></button><button className="tree-name" title={props.root} aria-current={isCurrentRoot ? 'location' : undefined} aria-selected={isSelectedRoot || undefined} onClick={() => setSelected(props.root)} onDoubleClick={() => props.navigate(props.root)} onKeyDown={event => {
       if (event.key !== 'Enter') return;
       event.preventDefault();

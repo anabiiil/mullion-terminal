@@ -5,6 +5,7 @@ const fsSync = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { quoteToken } = require('./completions.cjs');
+const { defaultAppearance, shellThemes, themeFiles } = require('./appearance.cjs');
 const NAVIGATION_SEQUENCE = '\x18\x07'; // Ctrl+X, Ctrl+G; private chord within app-owned editors.
 // Ctrl+E, Ctrl+U: move to the end of the input line, then delete all of it.
 const LINE_RESET_SEQUENCE = '\x05\x15';
@@ -262,7 +263,115 @@ __mullion_highlight_setup 2>/dev/null
 `;
 }
 
-function unixHooks(nonce, shell, navigationFile) {
+// The prompt's git segment, right after the path and before ❯: `git:(main → origin/main ↑1 ↓2)`.
+// Colors come from the __mullion_c_* variables (see promptTheme): by default plain ANSI that
+// xterm.js remaps through the terminal palette — `git:( )` and the upstream dim (bright black),
+// the branch/sha magenta, ahead green, behind red — or the colors chosen in Settings › Appearance.
+// Ahead/behind are shown only when non-zero. Opt out with MULLION_GIT_PROMPT=0.
+//
+// Only two or three `git` calls run per prompt, and only inside a work tree: `symbolic-ref`
+// (branch name — resolves even on an unborn branch with no commits yet) falling back to
+// `rev-parse --short HEAD` only for a detached HEAD; then, only once attached to a branch,
+// `rev-parse --abbrev-ref @{upstream}`; then, only when that upstream exists, a single
+// `rev-list --left-right --count` for the ahead/behind numbers. Outside a repository (or
+// without git on PATH) the first one or two calls fail quickly and nothing further runs.
+// `--no-optional-locks` (equivalent to GIT_OPTIONAL_LOCKS=0) and disabling fsmonitor keep a
+// prompt read from ever fighting a command the user is running in the same working tree.
+function gitSegmentScript(shell) {
+  const quiet = "command git -c core.fsmonitor=false --no-optional-locks";
+  if (shell === 'zsh') return `
+__mullion_git_segment() {
+  __mullion_git=''
+  [[ "\x24{MULLION_GIT_PROMPT:-1}" == 0 ]] && return
+  (( \x24{+commands[git]} )) || return
+  local __mullion_branch __mullion_upstream __mullion_counts __mullion_ahead __mullion_behind
+  integer __mullion_detached=0
+  __mullion_branch="$(${quiet} symbolic-ref --quiet --short HEAD 2>/dev/null)"
+  if [[ -z $__mullion_branch ]]; then
+    __mullion_branch="$(${quiet} rev-parse --short HEAD 2>/dev/null)"
+    [[ -z $__mullion_branch ]] && return
+    __mullion_detached=1
+  fi
+  __mullion_branch=\x24{__mullion_branch//\\%/%%}
+  if (( ! __mullion_detached )); then
+    __mullion_upstream="$(${quiet} rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)"
+  fi
+  __mullion_git="\x24{__mullion_c_git}git:(%f\x24{__mullion_c_branch}\x24{__mullion_branch}%f"
+  if [[ -n $__mullion_upstream ]]; then
+    __mullion_upstream=\x24{__mullion_upstream//\\%/%%}
+    __mullion_git+="\x24{__mullion_c_git} → \x24{__mullion_upstream}%f"
+    __mullion_counts="$(${quiet} rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)"
+    if [[ -n $__mullion_counts ]]; then
+      # rev-list's --count output is tab-separated ("<behind>\\t<ahead>"); plain \`read\`
+      # splits on any IFS whitespace (space, tab, newline), so it works without a literal tab.
+      read -r __mullion_behind __mullion_ahead <<< "$__mullion_counts"
+      (( __mullion_ahead )) && __mullion_git+=" \x24{__mullion_c_ahead}↑\x24{__mullion_ahead}%f"
+      (( __mullion_behind )) && __mullion_git+=" \x24{__mullion_c_behind}↓\x24{__mullion_behind}%f"
+    fi
+  fi
+  __mullion_git+="\x24{__mullion_c_git})%f"
+}
+typeset -g __mullion_git
+`;
+  // Bash's PS1 is re-expanded for $(), backticks and parameter substitution every time it's
+  // displayed (the "promptvars" option, on by default) even though we rebuild PS1's whole value
+  // on every prompt — so a branch name containing `\` or `$` is escaped here before it's spliced
+  // into PS1's new value, or it would be interpreted a second time at display. `%` has no special
+  // meaning in bash, so (unlike zsh) it is left alone.
+  return `
+__mullion_git_escape() { __mullion_git_escaped=\x24{1//\\\\/\\\\\\\\}; __mullion_git_escaped=\x24{__mullion_git_escaped//\\$/\\\\\\$}; }
+__mullion_git_segment() {
+  __mullion_git=''
+  [[ "\x24{MULLION_GIT_PROMPT:-1}" == 0 ]] && return
+  command -v git >/dev/null 2>&1 || return
+  local __mullion_branch __mullion_upstream __mullion_counts __mullion_ahead __mullion_behind __mullion_detached=0 __mullion_git_escaped
+  __mullion_branch="$(${quiet} symbolic-ref --quiet --short HEAD 2>/dev/null)"
+  if [[ -z $__mullion_branch ]]; then
+    __mullion_branch="$(${quiet} rev-parse --short HEAD 2>/dev/null)"
+    [[ -z $__mullion_branch ]] && return
+    __mullion_detached=1
+  fi
+  __mullion_git_escape "$__mullion_branch"; __mullion_branch="$__mullion_git_escaped"
+  if [[ "$__mullion_detached" == 0 ]]; then
+    __mullion_upstream="$(${quiet} rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)"
+  fi
+  __mullion_git="\x24{__mullion_c_git}git:(\\[\\e[0m\\]\x24{__mullion_c_branch}\x24{__mullion_branch}\\[\\e[0m\\]"
+  if [[ -n $__mullion_upstream ]]; then
+    __mullion_git_escape "$__mullion_upstream"; __mullion_upstream="$__mullion_git_escaped"
+    __mullion_git+="\x24{__mullion_c_git} → \x24{__mullion_upstream}\\[\\e[0m\\]"
+    __mullion_counts="$(${quiet} rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)"
+    if [[ -n $__mullion_counts ]]; then
+      read -r __mullion_behind __mullion_ahead <<< "$__mullion_counts"
+      (( __mullion_ahead )) && __mullion_git+=" \x24{__mullion_c_ahead}↑\x24{__mullion_ahead}\\[\\e[0m\\]"
+      (( __mullion_behind )) && __mullion_git+=" \x24{__mullion_c_behind}↓\x24{__mullion_behind}\\[\\e[0m\\]"
+    fi
+  fi
+  __mullion_git+="\x24{__mullion_c_git})\\[\\e[0m\\]"
+}
+`;
+}
+
+// Prompt colors live in __mullion_c_* variables (and the zsh flag highlighter's face). The
+// built-in defaults are set here; then every prompt re-reads the app's theme file (rewritten
+// atomically by the main process whenever the appearance changes), so already-open shells pick
+// up new colors on their next prompt. The file holds a handful of assignments, so sourcing it
+// costs ~25µs — cheaper than any reliable modification-time check in a shell. zsh older than
+// 5.7 has no %F{#rrggbb}; the file carries the nearest 256-color index for it.
+function promptTheme(shell, themeFile) {
+  const defaults = shellThemes(defaultAppearance())[shell].replace(/^#.*\n/, '');
+  const file = themeFile ? quoteToken(themeFile, 'linux') : "''";
+  const truecolor = shell === 'zsh' ? `typeset -g __mullion_truecolor=0
+autoload -Uz is-at-least 2>/dev/null && is-at-least 5.7 2>/dev/null && __mullion_truecolor=1
+` : '';
+  return `
+${truecolor}${defaults}__mullion_theme_file=${file}
+__mullion_load_theme() {
+  if [[ -n $__mullion_theme_file && -r $__mullion_theme_file ]]; then builtin source "$__mullion_theme_file"; fi
+}
+`;
+}
+
+function unixHooks(nonce, shell, navigationFile, themeFile) {
   // $__mullion_status is read from $__mullion_last_status, captured by a dedicated hook
   // (see below) rather than $? directly: a prompt theme's own precmd/PROMPT_COMMAND hooks
   // can run one of our hooks' command substitutions or its own commands first and clobber $?
@@ -284,9 +393,11 @@ __mullion_ensure_capture() {
     precmd_functions=(__mullion_capture_status "\x24{(@)precmd_functions:#__mullion_capture_status}")
   fi
 }
-__mullion_ready() {
+${promptTheme('zsh', themeFile)}${gitSegmentScript('zsh')}__mullion_ready() {
   local __mullion_status=$__mullion_last_status
-  PROMPT='%F{cyan}%1~%f %F{yellow}❯%f '
+  __mullion_load_theme
+  __mullion_git_segment
+  PROMPT="\x24{__mullion_c_path}%(4~|…/%3~|%~)%f\x24{__mullion_git:+ }\x24{__mullion_git}%f \x24{__mullion_c_arrow}❯%f "
   RPROMPT=''
   ${ready}
   return $__mullion_status
@@ -317,7 +428,7 @@ __mullion_readline_echo=0
 __mullion_last_status=0
 __mullion_capture_status() { __mullion_last_status=$?; }
 (( BASH_VERSINFO[0] == 3 )) && __mullion_legacy_readline=1
-__mullion_ready() {
+${promptTheme('bash', themeFile)}${gitSegmentScript('bash')}__mullion_ready() {
   local __mullion_status=$__mullion_last_status
   if [[ $__mullion_legacy_readline == 1 && "$1" != navigation ]]; then
     local __mullion_terminal_flags
@@ -334,7 +445,10 @@ __mullion_ready() {
   elif [[ $__mullion_legacy_history == 1 ]]; then __mullion_command
   else __mullion_command silent
   fi
-  PS1='\\[\\e[33m\\]❯\\[\\e[0m\\] '
+  __mullion_load_theme
+  __mullion_git_segment
+  PROMPT_DIRTRIM=3
+  PS1="\x24{__mullion_c_path}\\w\\[\\e[0m\\]\x24{__mullion_git:+ \x24__mullion_git} \x24{__mullion_c_arrow}❯\\[\\e[0m\\] "
   ${ready}
   return "$__mullion_status"
 }
@@ -357,10 +471,13 @@ fi
 ${navigationFile ? unixNavigation(nonce, shell, navigationFile) : ''}${editorWrappers(shell)}`;
 }
 
-async function prepareShell({ directory, nonce, home = os.homedir(), env = defaultEnvironment(home), shell = selectShell(env), platform = process.platform }) {
+// `themeDirectory` holds the theme files written by appearance.cjs's writeShellThemes (the app
+// shares one set across every session); without them the built-in prompt colors apply.
+async function prepareShell({ directory, nonce, home = os.homedir(), env = defaultEnvironment(home), shell = selectShell(env), platform = process.platform, themeDirectory = directory }) {
   if (!shell) throw new Error('No supported shell found. Install bash, zsh, or PowerShell.');
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const navigationFile = path.join(directory, 'navigation.request');
+  const themes = themeFiles(themeDirectory);
   const basename = path.basename(shell).toLowerCase();
   if (basename === 'zsh') {
     const original = env.ZDOTDIR || home;
@@ -369,8 +486,8 @@ async function prepareShell({ directory, nonce, home = os.homedir(), env = defau
     const scripts = {
       '.zshenv': `# Generated by Mullion Terminal. User files are never modified.\n__mullion_user_zdotdir=${originalQuoted}\nZDOTDIR=$__mullion_user_zdotdir\n[[ -f "$ZDOTDIR/.zshenv" ]] && source "$ZDOTDIR/.zshenv"\n__mullion_user_zdotdir=\x24{ZDOTDIR:-$HOME}\nZDOTDIR=${bridge}\n`,
       '.zprofile': `ZDOTDIR=$__mullion_user_zdotdir\n[[ -f "$ZDOTDIR/.zprofile" ]] && source "$ZDOTDIR/.zprofile"\n__mullion_user_zdotdir=\x24{ZDOTDIR:-$HOME}\nZDOTDIR=${bridge}\n`,
-      '.zshrc': `ZDOTDIR=$__mullion_user_zdotdir\n[[ -f "$ZDOTDIR/.zshrc" ]] && source "$ZDOTDIR/.zshrc"\n__mullion_user_zdotdir=\x24{ZDOTDIR:-$HOME}\nZDOTDIR=${bridge}\n${unixHooks(nonce, 'zsh', navigationFile)}`,
-      '.zlogin': `ZDOTDIR=$__mullion_user_zdotdir\n[[ -f "$ZDOTDIR/.zlogin" ]] && source "$ZDOTDIR/.zlogin"\n${env.ZDOTDIR ? '' : '[[ "$ZDOTDIR" == "$HOME" ]] && unset ZDOTDIR\n'}${unixHooks(nonce, 'zsh', navigationFile)}`,
+      '.zshrc': `ZDOTDIR=$__mullion_user_zdotdir\n[[ -f "$ZDOTDIR/.zshrc" ]] && source "$ZDOTDIR/.zshrc"\n__mullion_user_zdotdir=\x24{ZDOTDIR:-$HOME}\nZDOTDIR=${bridge}\n${unixHooks(nonce, 'zsh', navigationFile, themes.zsh)}`,
+      '.zlogin': `ZDOTDIR=$__mullion_user_zdotdir\n[[ -f "$ZDOTDIR/.zlogin" ]] && source "$ZDOTDIR/.zlogin"\n${env.ZDOTDIR ? '' : '[[ "$ZDOTDIR" == "$HOME" ]] && unset ZDOTDIR\n'}${unixHooks(nonce, 'zsh', navigationFile, themes.zsh)}`,
     };
     await Promise.all(Object.entries(scripts).map(([name, script]) => fs.writeFile(path.join(directory, name), script, { mode: 0o600 })));
     return { shell, args: ['-l', '-i'], env: { ...env, ZDOTDIR: directory }, navigationFile, navigationSequence: NAVIGATION_SEQUENCE, lineReset: LINE_RESET_SEQUENCE };
@@ -382,12 +499,16 @@ async function prepareShell({ directory, nonce, home = os.homedir(), env = defau
     const startup = platform === 'darwin'
       ? `[[ -f /etc/profile ]] && source /etc/profile\nfor __mullion_profile in ${loginFiles.join(' ')}; do\n  if [[ -f "$__mullion_profile" ]]; then source "$__mullion_profile"; break; fi\ndone`
       : `[[ -f /etc/bash.bashrc ]] && source /etc/bash.bashrc\n[[ -f ${userRc} ]] && source ${userRc}`;
-    const script = `# Generated by Mullion Terminal. Keep the user's native startup files.\n${startup}\n${unixHooks(nonce, 'bash', navigationFile)}`;
+    const script = `# Generated by Mullion Terminal. Keep the user's native startup files.\n${startup}\n${unixHooks(nonce, 'bash', navigationFile, themes.bash)}`;
     await fs.writeFile(rc, script, { mode: 0o600 });
     return { shell, args: ['--rcfile', rc, '-i'], env, navigationFile, navigationSequence: NAVIGATION_SEQUENCE, lineReset: LINE_RESET_SEQUENCE };
   }
   if (['pwsh.exe', 'powershell.exe', 'pwsh', 'powershell'].includes(basename)) {
     const rc = path.join(directory, 'prompt.ps1');
+    const psDefaults = shellThemes(defaultAppearance()).powershell.trim().split('\n').map(line => {
+      const [key, value] = line.split('=');
+      return `${key} = '${value}'`;
+    }).join('; ');
     const script = `# Generated by Mullion Terminal. Profiles have already been loaded by PowerShell.
 $global:__mullion_navigation_available = 0
 function global:__mullion_navigate {
@@ -459,13 +580,75 @@ if (Get-Module PSReadLine) {
     $global:__mullion_navigation_available = 1
   } catch { }
 }
+# Prompt colors (SGR parameters; empty means uncolored). The theme file written by the app is
+# read as key=value data at each prompt, never run as a script, and only when it changed.
+$global:__mullion_theme = @{ ${psDefaults} }
+$global:__mullion_theme_file = '${themes.powershell.replaceAll("'", "''")}'
+$global:__mullion_theme_stamp = $null
+$global:__mullion_parameter_color = $null
+function global:__mullion_color([string]$mullionKey) {
+  $mullionCode = $global:__mullion_theme[$mullionKey]
+  if ($mullionCode) { "$([char]27)[$($mullionCode)m" } else { '' }
+}
 # Match the zsh flag color, unless the user already chose their own Parameter
 # color (PSReadLine's shipped default is DarkGray, ESC[90m).
-try {
-  if ((Get-PSReadLineOption).ParameterColor -eq "$([char]0x1b)[90m") {
-    Set-PSReadLineOption -Colors @{ Parameter = "$([char]0x1b)[38;2;47;129;247m" } -ErrorAction Stop
-  }
-} catch { }
+function global:__mullion_apply_parameter_color {
+  try {
+    $mullionCurrent = (Get-PSReadLineOption).ParameterColor
+    $mullionWanted = __mullion_color flag
+    if ($mullionWanted -and ($mullionCurrent -eq "$([char]0x1b)[90m" -or $mullionCurrent -eq $global:__mullion_parameter_color)) {
+      Set-PSReadLineOption -Colors @{ Parameter = $mullionWanted } -ErrorAction Stop
+      $global:__mullion_parameter_color = $mullionWanted
+    }
+  } catch { }
+}
+function global:__mullion_load_theme {
+  try {
+    $mullionStamp = [IO.File]::GetLastWriteTimeUtc($global:__mullion_theme_file)
+    if ($mullionStamp -eq $global:__mullion_theme_stamp) { return }
+    $global:__mullion_theme_stamp = $mullionStamp
+    foreach ($mullionLine in [IO.File]::ReadAllLines($global:__mullion_theme_file)) {
+      if ($mullionLine -match '^([a-z]+)=([0-9;]*)$' -and $global:__mullion_theme.ContainsKey($Matches[1])) { $global:__mullion_theme[$Matches[1]] = $Matches[2] }
+    }
+  } catch { }
+  __mullion_apply_parameter_color
+}
+__mullion_apply_parameter_color
+# Same segment as zsh/bash, right after the path and before ❯ — see gitSegmentScript's comment
+# for the shape and the git calls used. Opt out with MULLION_GIT_PROMPT=0.
+function global:__mullion_git_segment {
+  if ($env:MULLION_GIT_PROMPT -eq '0') { return '' }
+  if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return '' }
+  $esc = [char]27
+  $mullionLabel = __mullion_color git
+  try {
+    $mullionBranch = (& git -c core.fsmonitor=false --no-optional-locks symbolic-ref --quiet --short HEAD 2>$null)
+    $mullionDetached = $false
+    if (-not $mullionBranch) {
+      $mullionBranch = (& git -c core.fsmonitor=false --no-optional-locks rev-parse --short HEAD 2>$null)
+      if (-not $mullionBranch) { return '' }
+      $mullionDetached = $true
+    }
+    $mullionUpstream = $null
+    if (-not $mullionDetached) {
+      $mullionUpstream = (& git -c core.fsmonitor=false --no-optional-locks rev-parse --abbrev-ref '@{upstream}' 2>$null)
+    }
+    $mullionGitSegment = "$($mullionLabel)git:($esc[0m$(__mullion_color branch)$mullionBranch$esc[0m"
+    if ($mullionUpstream) {
+      $mullionGitSegment += "$mullionLabel $([char]0x2192) $mullionUpstream$esc[0m"
+      $mullionCounts = (& git -c core.fsmonitor=false --no-optional-locks rev-list --left-right --count '@{upstream}...HEAD' 2>$null)
+      if ($mullionCounts) {
+        $mullionCountParts = $mullionCounts -split '\\s+'
+        $mullionBehindCount = [int]$mullionCountParts[0]
+        $mullionAheadCount = [int]$mullionCountParts[1]
+        if ($mullionAheadCount -gt 0) { $mullionGitSegment += " $(__mullion_color ahead)$([char]0x2191)$mullionAheadCount$esc[0m" }
+        if ($mullionBehindCount -gt 0) { $mullionGitSegment += " $(__mullion_color behind)$([char]0x2193)$mullionBehindCount$esc[0m" }
+      }
+    }
+    $mullionGitSegment += "$($mullionLabel))$esc[0m"
+    return $mullionGitSegment
+  } catch { return '' }
+}
 $global:__mullion_historyId = (Get-History -Count 1).Id
 $global:__mullion_firstPrompt = $true
 $global:__mullion_lastError = $null
@@ -491,18 +674,31 @@ function global:prompt {
       $mullionStatus = if ($mullionNewError -and $mullionError.FullyQualifiedErrorId -eq 'CommandNotFoundException') { 127 } else { 1 }
     }
   }
-  $global:__mullion_lastError = $mullionError
   $mullionCwd = (Get-Location).ProviderPath
   if (-not $mullionCwd) { $mullionCwd = (Get-Location).Path }
   $mullionCwd64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($mullionCwd))
   $mullionPath64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($env:PATH))
   [Console]::Write("$([char]27)]777;Mullion;${nonce};ready;$mullionCwd64;$mullionPath64;$global:__mullion_navigation_available;$mullionStatus$([char]7)")
-  $mullionName = if ($mullionCwd -eq $HOME) { '~' } else { Split-Path -Path $mullionCwd -Leaf }
-  if (-not $mullionName) { $mullionName = [IO.Path]::GetPathRoot($mullionCwd) }
-  if (-not $mullionName) { $mullionName = $mullionCwd }
-  # Kept for __mullion_navigate, which must not call prompt (it reports state).
-  $global:__mullion_promptText = "$mullionName ❯ "
-  $global:__mullion_promptText
+  # Last three path parts, earlier ones collapsed to …\\ (home shown as ~).
+  $mullionName = $mullionCwd
+  if ($HOME -and $mullionCwd.StartsWith($HOME, [StringComparison]::OrdinalIgnoreCase)) { $mullionName = '~' + $mullionCwd.Substring($HOME.Length) }
+  $mullionParts = @($mullionName -split '[\\\\/]' | Where-Object { $_ })
+  if ($mullionParts.Count -gt 3) { $mullionName = ([char]0x2026) + '\\' + ($mullionParts[-3..-1] -join '\\') }
+  __mullion_load_theme
+  $mullionGit = __mullion_git_segment
+  # The git calls above set $LASTEXITCODE (and may record errors); give the user's own back,
+  # and remember the newest error only now so the next prompt compares against it.
+  $global:LASTEXITCODE = $mullionExitCode
+  $global:__mullion_lastError = if ($global:Error.Count) { $global:Error[0] } else { $null }
+  $mullionPathColor = __mullion_color path
+  $mullionArrowColor = __mullion_color arrow
+  if ($mullionPathColor) { $mullionName = "$mullionPathColor$mullionName$([char]27)[0m" }
+  $mullionArrow = if ($mullionArrowColor) { "$mullionArrowColor❯$([char]27)[0m" } else { '❯' }
+  $mullionPrompt = if ($mullionGit) { "$mullionName $mullionGit $mullionArrow " } else { "$mullionName $mullionArrow " }
+  # Kept for __mullion_navigate, which must not call prompt (it reports state). It measures
+  # the prompt's width, so it holds only the visible text, without color sequences.
+  $global:__mullion_promptText = $mullionPrompt -replace "$([char]27)\\[[0-9;]*m", ''
+  $mullionPrompt
 }
 `;
     await fs.writeFile(rc, script, { mode: 0o600 });
@@ -513,4 +709,4 @@ function global:prompt {
   throw new Error('Unsupported shell. Use zsh, bash, or PowerShell.');
 }
 
-module.exports = { defaultEnvironment, utf8Locale, selectShell, prepareShell, unixHooks, editorWrappers, flagHighlighter, findExecutable, NAVIGATION_SEQUENCE, LINE_RESET_SEQUENCE, POWERSHELL_NAVIGATION_SEQUENCE, POWERSHELL_LINE_RESET_SEQUENCE, navigationRequest };
+module.exports = { defaultEnvironment, utf8Locale, selectShell, prepareShell, unixHooks, editorWrappers, flagHighlighter, gitSegmentScript, findExecutable, NAVIGATION_SEQUENCE, LINE_RESET_SEQUENCE, POWERSHELL_NAVIGATION_SEQUENCE, POWERSHELL_LINE_RESET_SEQUENCE, navigationRequest };

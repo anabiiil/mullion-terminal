@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('terminalAPI', Object.freeze({
   listDirectory: (directory, showHidden) => ipcRenderer.invoke('terminal:list-directory', directory, showHidden),
   completions: (id, line) => ipcRenderer.invoke('terminal:completions', id, line),
   foregroundProcess: id => ipcRenderer.invoke('terminal:foreground-process', id),
+  gitStatus: id => ipcRenderer.invoke('terminal:git-status', id),
+  gitBranches: (id, refresh) => ipcRenderer.invoke('terminal:git-branches', id, refresh),
   recordCommand: (command, cwd) => ipcRenderer.invoke('terminal:record-command', command, cwd),
   pinCommand: (command, pinned) => ipcRenderer.invoke('terminal:pin-command', command, pinned),
   deleteCommand: command => ipcRenderer.invoke('terminal:delete-command', command),
@@ -30,6 +32,7 @@ contextBridge.exposeInMainWorld('terminalAPI', Object.freeze({
   openEditor: (id, editorId) => ipcRenderer.invoke('terminal:open-editor', id, editorId),
   copyText: text => ipcRenderer.invoke('terminal:copy-text', text),
   readText: () => ipcRenderer.invoke('terminal:read-text'),
+  newWindow: () => ipcRenderer.invoke('terminal:new-window'),
   windowAction: action => ipcRenderer.send('terminal:window-action', action),
   onEvent: callback => {
     if (typeof callback !== 'function') throw new TypeError('Expected an event callback.');

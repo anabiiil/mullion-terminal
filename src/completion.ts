@@ -113,6 +113,14 @@ function comparable(value: string, platform: string): string {
   return platform === 'win32' ? value.toLowerCase() : value;
 }
 
+/** Case folding for filesystem *path* comparisons specifically: the filesystem itself is
+ * case-insensitive by default on both Windows and macOS, unlike ordinary shell text matching
+ * (`comparable()` above, used for command/argument text generally), which only folds case on
+ * Windows. Used only when matching a previously visited directory's full-path label. */
+function pathComparable(value: string, platform: string): string {
+  return platform === 'win32' || platform === 'darwin' ? value.toLowerCase() : value;
+}
+
 function sameDirectory(a: string, b: string | undefined, platform: string): boolean {
   if (b === undefined) return false;
   const normalize = (value: string) => platform === 'win32'
@@ -204,6 +212,51 @@ function filesystemCommand(line: string, platform: string): { recognized: boolea
   return { recognized, bare: recognized && line.trim() === first && !/\s$/.test(line) };
 }
 
+const PATH_SEPARATOR = /[\\/]/;
+
+/** True for a directory/file candidate's label that is itself a full (possibly `~`-abbreviated)
+ * path — a previously visited directory offered from history — rather than a single filesystem
+ * entry's bare name. The live filesystem backend never produces one of these: its labels are
+ * always just `entry.name` (plus a trailing separator for a folder). */
+function isFullPathLabel(label: string): boolean {
+  const stripped = label.replace(/[\\/]+$/, '');
+  return PATH_SEPARATOR.test(stripped) || stripped.startsWith('~');
+}
+
+/**
+ * Matches (and measures) a full-path label against the token actually typed, for the one case
+ * the ordinary value-prefix comparison can't handle: a visited directory's on-disk `value` has
+ * been expanded to an absolute path, so it no longer shares a literal prefix with a typed `~/…`
+ * token, and a bare directory name (no slash at all) is matched against the *current* directory's
+ * children by value, never a deep ancestor's basename. Returns the unmatched remainder of the
+ * label (for the inline ghost), or null when this candidate doesn't match this way.
+ */
+function matchFullPathLabel(typedValue: string, label: string, platform: string): string | null {
+  if (!isFullPathLabel(label)) return null;
+  const compare = (value: string) => pathComparable(value, platform);
+  if (typedValue.startsWith('~')) {
+    return compare(label).startsWith(compare(typedValue)) ? label.slice(typedValue.length) : null;
+  }
+  if (!typedValue || PATH_SEPARATOR.test(typedValue)) return null;
+  const stripped = label.replace(/[\\/]+$/, '');
+  const basename = stripped.split(PATH_SEPARATOR).at(-1) ?? '';
+  if (!compare(basename).startsWith(compare(typedValue))) return null;
+  return label.slice(label.lastIndexOf(basename) + typedValue.length);
+}
+
+/** Last-resort match/measure for a directory/file candidate once the ordinary value-prefix
+ * comparison fails to see past a server-side rewrite of what was typed (most commonly: a typed
+ * `~/…` path expanded to an absolute value). Tries the full-path label first (a previously
+ * visited directory), then falls back to comparing basenames — the typed token's last segment
+ * against the candidate's (bare-name) label — which is what a single filesystem entry's label
+ * always is. Returns the unmatched label remainder, or null if neither matches. */
+function matchByLabel(typedValue: string, label: string, platform: string): string | null {
+  const fullPath = matchFullPathLabel(typedValue, label, platform);
+  if (fullPath !== null) return fullPath;
+  const basename = typedValue.split(platform === 'win32' ? /[\\/]/ : /\//).at(-1) ?? '';
+  return comparable(label, platform).startsWith(comparable(basename, platform)) ? label.slice(basename.length) : null;
+}
+
 function candidateMatches(line: string, candidate: CompletionCandidate, platform: string, autoComplete: boolean): boolean {
   const compare = (value: string) => comparable(value, platform);
   if (compare(candidate.value.trimEnd()) === compare(line.trimEnd())) return false;
@@ -218,10 +271,11 @@ function candidateMatches(line: string, candidate: CompletionCandidate, platform
     if (!typed.value && (autoComplete || !context.recognized)) return false;
     if (compare(candidate.value).startsWith(compare(line))) return true;
     const completed = finalToken(candidate.value.trimEnd(), platform);
+    if (compare(line.slice(0, typed.start)) !== compare(candidate.value.slice(0, completed.start))) return false;
     // Backends may quote/escape a filename when constructing a full replacement.
     const completedPath = completed.value.replace(platform === 'win32' ? /^\.\\(?=-)/ : /^\.\/(?=-)/, '');
-    return compare(line.slice(0, typed.start)) === compare(candidate.value.slice(0, completed.start))
-      && (compare(completed.value).startsWith(compare(typed.value)) || compare(completedPath).startsWith(compare(typed.value)));
+    if (compare(completed.value).startsWith(compare(typed.value)) || compare(completedPath).startsWith(compare(typed.value))) return true;
+    return matchByLabel(typed.value, candidate.label, platform) !== null;
   }
   return compare(candidate.value).startsWith(compare(line));
 }
@@ -234,11 +288,10 @@ export function inlineCompletion(line: string, candidate: CompletionCandidate, p
   const completed = finalToken(candidate.value.trimEnd(), platform);
   if (comparable(completed.value, platform).startsWith(comparable(typed.value, platform)))
     return completed.value.slice(typed.value.length);
-  // Quoted ~/ paths may be expanded to home in the actual replacement. The label
-  // still supplies the filename suffix without displaying the absolute home path.
-  const basename = typed.value.split(platform === 'win32' ? /[\\/]/ : /\//).at(-1) ?? '';
-  return comparable(candidate.label, platform).startsWith(comparable(basename, platform))
-    ? candidate.label.slice(basename.length) : '';
+  // Quoted ~/ paths may be expanded to home in the actual replacement, and a previously visited
+  // directory's full-path label diverges from a typed `~/…` or bare name the same way: match by
+  // label instead of value, so the ghost still supplies the missing suffix in either case.
+  return matchByLabel(typed.value, candidate.label, platform) ?? '';
 }
 
 /**
@@ -266,6 +319,10 @@ export function rankSuggestions(
     if (!previous || previous.score < score) ranked.set(key, { ...candidate, score });
   };
 
+  const typedToken = finalToken(line, platform).value;
+  const typedIsAbsoluteOrHome = typedToken.startsWith('/') || typedToken.startsWith('~')
+    || (platform === 'win32' && /^[A-Za-z]:[\\/]/.test(typedToken));
+
   const now = Date.now();
   for (const entry of aggregateHistory(history, cwd, platform)) {
     // Never offer a learned `cd …`/`pushd …` as a suggestion, and app-injected
@@ -285,8 +342,17 @@ export function rankSuggestions(
 
   for (const candidate of candidates) {
     const filesystem = candidate.kind === 'directory' || candidate.kind === 'file';
-    add(candidate, candidate.kind === 'command' ? 120 : (prioritizeFilesystem && filesystem ? 100 : 0)
-      + (candidate.kind === 'directory' ? 110 : 100));
+    let score = candidate.kind === 'command' ? 120 : (prioritizeFilesystem && filesystem ? 100 : 0)
+      + (candidate.kind === 'directory' ? 110 : 100);
+    // A previously visited directory's full-path label extends what was typed by more than a
+    // single next segment; rank it above the live filesystem's plain next-segment listings —
+    // but only when the typed token is itself an absolute/`~` path, so the full path genuinely
+    // extends what was typed. For a bare name or a relative path, the full path is a different,
+    // unrelated replacement of the typed token: it must rank below every relative candidate
+    // (the live filesystem backend already drops it outright when it's reachable from cwd, but
+    // this keeps ranking itself safe even if a full-path candidate reaches here some other way).
+    if (candidate.kind === 'directory' && isFullPathLabel(candidate.label)) score += typedIsAbsoluteOrHome ? 15 : -15;
+    add(candidate, score);
   }
   // Starter hints only complete the first word, never a command's arguments.
   if (finalToken(line, platform).start === 0) {

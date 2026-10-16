@@ -40,3 +40,17 @@ export function shortcutAction(event: KeyInput, context: KeyContext): KeyAction 
   if (key === 's' && !event.shiftKey && context.editor) return 'save';
   return null;
 }
+
+/**
+ * New Window: Cmd+N on macOS, Ctrl+Shift+N elsewhere (like the other app
+ * shortcuts), plus plain Ctrl+N on every platform. Plain Ctrl+N is "next
+ * line" in nano/vim, so it passes through while a full-screen program owns
+ * the alternate screen; at the shell prompt it is taken over (readline/ZLE's
+ * "next history" is still on the Down arrow).
+ */
+export function isNewWindowShortcut(event: KeyInput, context: { platform?: string; alternateScreen: boolean }): boolean {
+  if (event.altKey || event.key.toLowerCase() !== 'n') return false;
+  if (context.platform === 'darwin' && event.metaKey && !event.ctrlKey && !event.shiftKey) return true;
+  if (context.platform !== 'darwin' && event.ctrlKey && event.shiftKey && !event.metaKey) return true;
+  return event.ctrlKey && !event.metaKey && !event.shiftKey && !context.alternateScreen;
+}

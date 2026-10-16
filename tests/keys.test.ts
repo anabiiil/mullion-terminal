@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { shortcutAction, type KeyInput } from '../src/keys';
+import { shortcutAction, isNewWindowShortcut, type KeyInput } from '../src/keys';
 
 const shell = { hasSelection: false, alternateScreen: false, editor: null as 'nano' | 'vim' | null };
 const fullScreen = { ...shell, alternateScreen: true };
@@ -52,4 +52,25 @@ test('clear shortcuts', () => {
   assert.equal(shortcutAction(key('K', { ctrlKey: true, shiftKey: true }), shell), 'clear');
   // Ctrl+K is kill-line in readline and cut in nano.
   assert.equal(shortcutAction(key('k', { ctrlKey: true }), shell), null);
+});
+
+test('New Window: Cmd+N on macOS, Ctrl+Shift+N elsewhere, plain Ctrl+N everywhere except in full-screen programs', () => {
+  const mac = { platform: 'darwin', alternateScreen: false };
+  const linux = { platform: 'linux', alternateScreen: false };
+  const windows = { platform: 'win32', alternateScreen: false };
+  assert.equal(isNewWindowShortcut(key('n', { metaKey: true }), mac), true);
+  assert.equal(isNewWindowShortcut(key('n', { metaKey: true }), { ...mac, alternateScreen: true }), true);
+  assert.equal(isNewWindowShortcut(key('n', { metaKey: true }), linux), false);
+  assert.equal(isNewWindowShortcut(key('N', { ctrlKey: true, shiftKey: true }), linux), true);
+  assert.equal(isNewWindowShortcut(key('N', { ctrlKey: true, shiftKey: true }), { ...windows, alternateScreen: true }), true);
+  assert.equal(isNewWindowShortcut(key('N', { ctrlKey: true, shiftKey: true }), mac), false);
+  for (const context of [mac, linux, windows]) {
+    assert.equal(isNewWindowShortcut(key('n', { ctrlKey: true }), context), true);
+    // nano/vim use Ctrl+N as "next line".
+    assert.equal(isNewWindowShortcut(key('n', { ctrlKey: true }), { ...context, alternateScreen: true }), false);
+    assert.equal(isNewWindowShortcut(key('n', { ctrlKey: true, altKey: true }), context), false);
+    assert.equal(isNewWindowShortcut(key('n', { ctrlKey: true, metaKey: true }), context), false);
+    assert.equal(isNewWindowShortcut(key('n'), context), false);
+    assert.equal(isNewWindowShortcut(key('m', { ctrlKey: true }), context), false);
+  }
 });

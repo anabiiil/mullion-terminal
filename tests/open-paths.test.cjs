@@ -86,3 +86,26 @@ test('pathsFromArgv returns an empty array for non-array input', () => {
   assert.deepEqual(pathsFromArgv(undefined), []);
   assert.deepEqual(pathsFromArgv(null), []);
 });
+
+test('openModeFromArgv reads --open-mode=tab|window and ignores anything else', () => {
+  const { openModeFromArgv } = require('../electron/open-paths.cjs');
+  assert.equal(openModeFromArgv(['app', '--open-mode=window', 'C:\\Users\\me']), 'window');
+  assert.equal(openModeFromArgv(['app', '--open-mode=tab', '/tmp']), 'tab');
+  assert.equal(openModeFromArgv(['app', '--open-mode=tab', '--open-mode=window']), 'window');
+  assert.equal(openModeFromArgv(['app', '--open-mode=split', '/tmp']), null);
+  assert.equal(openModeFromArgv(['app', '--open-mode', 'window']), null);
+  assert.equal(openModeFromArgv(['app', '/tmp']), null);
+  assert.equal(openModeFromArgv(undefined), null);
+});
+
+test('urlsFromArgv picks out mullion-terminal links, and pathsFromArgv never treats a link as a path', async t => {
+  const { urlsFromArgv } = require('../electron/open-paths.cjs');
+  const { root, folder } = await fixture(t);
+  const url = `mullion-terminal://open?mode=window&path=${encodeURIComponent(folder)}`;
+  // A relative "path" that happens to exist under cwd must still not match a link.
+  await fs.mkdir(path.join(root, 'mullion-terminal:'), { recursive: true });
+  const argv = ['/opt/app', '--open-mode=window', url, 'https://example.com', folder];
+  assert.deepEqual(urlsFromArgv(argv), [url]);
+  assert.deepEqual(urlsFromArgv(['/usr/bin/electron', url, url], { isPackaged: false }), [url]);
+  assert.deepEqual(pathsFromArgv(argv, { cwd: root }), [{ path: folder, isDirectory: true }]);
+});

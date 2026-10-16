@@ -7,8 +7,8 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawn, spawnSync } = require('node:child_process');
 const { PromptParser } = require('../electron/osc.cjs');
-const { LocalStore, normalizeHistory, HISTORY_LIMIT } = require('../electron/store.cjs');
-const { quoteToken, directoryCommand, tokenize, complete, isInjectedCommand } = require('../electron/completions.cjs');
+const { LocalStore, normalizeHistory, normalizeDirectories, HISTORY_LIMIT, DIRECTORIES_LIMIT } = require('../electron/store.cjs');
+const { quoteToken, directoryCommand, tokenize, complete, isInjectedCommand, abbreviateHome, visitedDirectoryCandidates } = require('../electron/completions.cjs');
 const { prepareShell, defaultEnvironment } = require('../electron/shell.cjs');
 const { SubmissionTracker } = require('../electron/submissions.cjs');
 
@@ -329,8 +329,8 @@ test('PowerShell startup keeps profiles and uses inline encoding without policy 
   assert(script.includes('Set-PSReadLineOption -PredictionSource None'));
   assert(script.includes('$global:__mullion_navigation_available;$mullionStatus'));
   assert(script.includes('} catch {'));
-  assert(script.includes('Split-Path -Path $mullionCwd -Leaf'));
-  assert(script.includes('"$mullionName ❯ "'));
+  assert(script.includes("$mullionParts[-3..-1] -join '\\'"), 'PowerShell shows the last three path parts in the prompt');
+  assert(script.includes('"$mullionName $mullionArrow "'), 'the path, then ❯ (each colored only when a color is chosen)');
   assert(!script.includes('__mullion_previousPrompt'));
   // Function-key chords: a Ctrl+letter chord breaks once ConPTY and PowerShell disagree on the keyboard layout.
   assert(script.includes("Set-PSReadLineKeyHandler -Chord 'Ctrl+Alt+Shift+F12' -ScriptBlock { __mullion_navigate }"));
@@ -524,8 +524,192 @@ test('bash integration preserves rc/prompt command and learns the executed nativ
   assert(visible.includes('OLD-PROMPT'), visible);
   const plain = visible.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
   assert(plain.includes('❯ '), plain);
-  assert(!plain.includes(`${path.basename(home)} ❯ `), 'Bash keeps its prompt compact while cwd stays live in the header');
+  assert(/\S+ ❯ /.test(plain), 'Bash shows the working directory (last three parts at most) before the prompt arrow');
   assert.deepEqual(commands, ['printf "CONFIG:%s\\n" "$MULLION_TEST_CONFIG"']);
   assert.deepEqual(records, [submitted, submitted]);
   assert.equal(await fs.readFile(path.join(home, '.bashrc'), 'utf8'), rc);
+});
+
+test('store.recordDirectory() records a visited directory, bumps its count on revisits, and normalizes trailing slashes', async t => {
+  const root = await temporary(t);
+  let now = 100;
+  const store = new LocalStore(root, () => ++now, { platform: 'linux', home: '/home/user' });
+  await store.load();
+  await store.recordDirectory('/home/user/Work/Projects');
+  await store.recordDirectory('/home/user/Work/Projects/'); // Trailing slash: the same directory.
+  const directories = (await store.load()).directories;
+  assert.equal(directories.length, 1);
+  assert.equal(directories[0].path, '/home/user/Work/Projects');
+  assert.equal(directories[0].count, 2);
+});
+
+test('store.recordDirectory() ignores the home directory, the filesystem root, and scratch/temp directories', async t => {
+  const root = await temporary(t);
+  const store = new LocalStore(root, Date.now, { platform: 'linux', home: '/home/user' });
+  await store.load();
+  await store.recordDirectory('/home/user');
+  await store.recordDirectory('/home/user/');
+  await store.recordDirectory('/');
+  await store.recordDirectory('/tmp/mullion-terminal-abc123');
+  await store.recordDirectory('/private/var/folders/xy/abc/T');
+  assert.deepEqual((await store.load()).directories, []);
+  // A real visit still records normally.
+  await store.recordDirectory('/home/user/Work');
+  assert.equal((await store.load()).directories.length, 1);
+});
+
+test('store.recordDirectory() compares case-insensitively on darwin and win32, case-sensitively elsewhere', async t => {
+  const darwinRoot = await temporary(t);
+  const darwinStore = new LocalStore(darwinRoot, Date.now, { platform: 'darwin', home: '/Users/test' });
+  await darwinStore.load();
+  await darwinStore.recordDirectory('/Users/test/Work');
+  await darwinStore.recordDirectory('/users/test/WORK');
+  assert.equal((await darwinStore.load()).directories.length, 1);
+  assert.equal((await darwinStore.load()).directories[0].count, 2);
+
+  const windowsRoot = await temporary(t);
+  const windowsStore = new LocalStore(windowsRoot, Date.now, { platform: 'win32', home: 'C:\\Users\\test' });
+  await windowsStore.load();
+  await windowsStore.recordDirectory('C:\\Projects\\App');
+  await windowsStore.recordDirectory('c:\\projects\\app\\');
+  assert.equal((await windowsStore.load()).directories.length, 1);
+
+  const linuxRoot = await temporary(t);
+  const linuxStore = new LocalStore(linuxRoot, Date.now, { platform: 'linux', home: '/home/test' });
+  await linuxStore.load();
+  await linuxStore.recordDirectory('/home/test/Work');
+  await linuxStore.recordDirectory('/home/test/WORK');
+  assert.equal((await linuxStore.load()).directories.length, 2);
+});
+
+test('store.recordDirectory() persists across reload alongside history', async t => {
+  const root = await temporary(t);
+  const store = new LocalStore(root, Date.now, { platform: 'linux', home: '/home/test' });
+  await store.load();
+  await store.recordDirectory('/home/test/Work/Projects');
+  await store.record('git status', '/home/test/Work/Projects');
+  const restored = new LocalStore(root, Date.now, { platform: 'linux', home: '/home/test' });
+  const snapshot = await restored.load();
+  assert.deepEqual(snapshot.directories.map(entry => entry.path), ['/home/test/Work/Projects']);
+  assert.deepEqual(snapshot.history.map(entry => entry.command), ['git status']);
+  assert.deepEqual((await fs.readdir(root)).filter(file => file.endsWith('.tmp')), []);
+});
+
+test('normalizeDirectories ignores malformed entries, filters the home directory and root, and enforces the cap', () => {
+  const malformed = [
+    { path: '' }, { path: 123 }, { path: 'bad\npath' }, null, undefined, 'not-an-object',
+    { path: '/home/test' }, { path: '/home/test/' }, { path: '/' },
+  ];
+  assert.deepEqual(normalizeDirectories(malformed, 'linux', '/home/test'), []);
+  const many = Array.from({ length: DIRECTORIES_LIMIT + 5 }, (_, index) => ({ path: `/data/dir-${index}`, count: 1, lastUsed: index + 1 }));
+  assert.equal(normalizeDirectories(many, 'linux', '/home/test').length, DIRECTORIES_LIMIT);
+  // The most recently used entries survive the cap.
+  const survivors = normalizeDirectories(many, 'linux', '/home/test').map(entry => entry.path);
+  assert(survivors.includes(`/data/dir-${DIRECTORIES_LIMIT + 4}`));
+  assert(!survivors.includes('/data/dir-0'));
+});
+
+test('abbreviateHome shortens a path under home to `~`, case-insensitively on darwin/win32', () => {
+  assert.equal(abbreviateHome('/Users/test', '/Users/test', 'darwin'), '~');
+  assert.equal(abbreviateHome('/Users/test/Work/Projects', '/Users/test', 'darwin'), '~/Work/Projects');
+  assert.equal(abbreviateHome('/USERS/TEST/work', '/Users/test', 'darwin'), '~/work');
+  assert.equal(abbreviateHome('/Volumes/other', '/Users/test', 'darwin'), '/Volumes/other');
+  assert.equal(abbreviateHome('C:\\Users\\test\\Work', 'C:\\Users\\test', 'win32'), '~\\Work');
+  assert.equal(abbreviateHome('/home/test/Work', '/home/test', 'linux'), '~/Work');
+  assert.equal(abbreviateHome('/HOME/TEST/Work', '/home/test', 'linux'), '/HOME/TEST/Work');
+});
+
+test('visitedDirectoryCandidates matches absolute and `~`-prefixed path prefixes, excludes cwd, and ranks by frequency/recency', () => {
+  const now = Date.now();
+  const visitedDirectories = [
+    { path: '/Volumes/anabil/Work/Projects', count: 10, lastUsed: now },
+    { path: '/Volumes/anabil/Work/Old', count: 1, lastUsed: now - 100 * 86_400_000 },
+    { path: '/Volumes/anabil', count: 5, lastUsed: now },
+  ];
+  const absolute = visitedDirectoryCandidates({ raw: '/Vol', commandName: 'cd', cwd: '/elsewhere', home: '/Users/test', platform: 'darwin', visitedDirectories });
+  assert.deepEqual(absolute.map(c => c.insert), ['/Volumes/anabil/Work/Projects/', '/Volumes/anabil/', '/Volumes/anabil/Work/Old/']);
+
+  const tilde = visitedDirectoryCandidates({ raw: '~/Wo', commandName: 'cd', cwd: '/elsewhere', home: '/Volumes/anabil', platform: 'darwin', visitedDirectories });
+  assert.deepEqual(tilde.map(c => c.label), ['~/Work/Projects', '~/Work/Old']);
+
+  // Never suggest the directory the session is already in.
+  const excludesCwd = visitedDirectoryCandidates({ raw: '/Vol', commandName: 'cd', cwd: '/Volumes/anabil/Work/Projects', home: '/Users/test', platform: 'darwin', visitedDirectories });
+  assert(!excludesCwd.some(c => c.insert.startsWith('/Volumes/anabil/Work/Projects/')));
+
+  // Case-insensitive on darwin.
+  const caseInsensitive = visitedDirectoryCandidates({ raw: '/VOL', commandName: 'cd', cwd: '/elsewhere', home: '/Users/test', platform: 'darwin', visitedDirectories });
+  assert.equal(caseInsensitive.length, 3);
+});
+
+test('visitedDirectoryCandidates offers a bare directory name (no slash) by basename, for cd-like commands only, and respects a files-only policy', () => {
+  const visitedDirectories = [{ path: '/Volumes/anabil/Work/Projects/Alpha', count: 2, lastUsed: Date.now() }];
+  const cd = visitedDirectoryCandidates({ raw: 'Al', commandName: 'cd', cwd: '/elsewhere', home: '/Users/test', platform: 'darwin', visitedDirectories });
+  assert.equal(cd.length, 1);
+  assert.equal(cd[0].label, '/Volumes/anabil/Work/Projects/Alpha');
+  // Not offered for a command that isn't a directory-changing one.
+  const cat = visitedDirectoryCandidates({ raw: 'Al', commandName: 'cat', cwd: '/elsewhere', home: '/Users/test', platform: 'darwin', visitedDirectories });
+  assert.deepEqual(cat, []);
+  // Or for a command whose policy only wants files.
+  const withFilesPolicy = visitedDirectoryCandidates({ raw: 'Al', commandName: 'cd', cwd: '/elsewhere', home: '/Users/test', platform: 'darwin', visitedDirectories, policy: { directories: false, files: true } });
+  assert.deepEqual(withFilesPolicy, []);
+});
+
+test('visitedDirectoryCandidates suppresses every bare-name basename match once a live sibling of cwd matches the same token (regression: `cd Projec` + Tab must never jump to an absolute visited path)', () => {
+  const now = Date.now();
+  const cwd = '/Volumes/anabil/Work';
+  const visitedDirectories = [
+    { path: '/Volumes/anabil/Work/Projects', count: 10, lastUsed: now },
+    { path: '/Volumes/elsewhere/Projections', count: 3, lastUsed: now },
+  ];
+  // A live child of cwd ("Projects") matches the bare token: every basename-matched visited
+  // candidate is suppressed outright, including the one that happens to be that very child —
+  // the relative candidate from the live filesystem is what must be offered instead.
+  const withLiveMatch = visitedDirectoryCandidates({
+    raw: 'Projec', commandName: 'cd', cwd, home: '/Users/test', platform: 'darwin', visitedDirectories, hasLiveDirectoryMatch: true,
+  });
+  assert.deepEqual(withLiveMatch, []);
+  // Without a live sibling match (e.g. the token's only match is several levels deep, as in
+  // the "offers a bare directory name" test above), basename matches still surface normally —
+  // including one that happens to live under cwd — since there's no live relative candidate to
+  // be shadowed by it.
+  const withoutLiveMatch = visitedDirectoryCandidates({
+    raw: 'Projec', commandName: 'cd', cwd, home: '/Users/test', platform: 'darwin', visitedDirectories, hasLiveDirectoryMatch: false,
+  });
+  assert.deepEqual(withoutLiveMatch.map(c => c.label).sort(), ['/Volumes/anabil/Work/Projects', '/Volumes/elsewhere/Projections'].sort());
+});
+
+test('complete() never offers a visited directory for a bare cd token when cwd already has a matching real child (regression: `cd Projec` + Tab must yield the relative "Projects/", not an absolute visited path)', async t => {
+  const root = await temporary(t);
+  await fs.mkdir(path.join(root, 'Projects'));
+  const decoyRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'mullion-decoy-'));
+  t.after(() => fs.rm(decoyRoot, { recursive: true, force: true }));
+  const visitedDirectories = [
+    { path: path.join(root, 'Projects'), count: 10, lastUsed: Date.now() },
+    { path: path.join(decoyRoot, 'Projections'), count: 3, lastUsed: Date.now() },
+  ];
+  const candidates = await complete({ line: 'cd Projec', cwd: root, platform: process.platform, environmentPath: '', home: root, visitedDirectories });
+  assert(!candidates.some(c => c.detail?.startsWith('Visited')), JSON.stringify(candidates));
+  assert.deepEqual(candidates.map(c => c.value), [`cd ${quoteToken(`Projects${path.sep}`, process.platform)}`]);
+});
+
+test('complete() merges matching visited directories, quoting paths with spaces exactly like live filesystem candidates', async t => {
+  const root = await temporary(t);
+  const elsewhereRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'mullion-visited-'));
+  t.after(() => fs.rm(elsewhereRoot, { recursive: true, force: true }));
+  const visited = path.join(elsewhereRoot, 'Old Projects');
+  const visitedDirectories = [{ path: visited, count: 7, lastUsed: Date.now() }];
+  const candidates = await complete({ line: `cd ${elsewhereRoot}${path.sep}Old`, cwd: root, platform: process.platform, environmentPath: '', home: root, visitedDirectories });
+  const match = candidates.find(candidate => candidate.detail === 'Visited 7×');
+  assert(match, JSON.stringify(candidates));
+  assert.equal(match.kind, 'directory');
+  assert.equal(match.value, `cd ${quoteToken(`${visited}${path.sep}`, process.platform)}`);
+});
+
+test('openWithTarget defaults to a new tab and only ever holds tab or window', () => {
+  const { normalizeSettings, DEFAULT_SETTINGS } = require('../electron/store.cjs');
+  assert.equal(DEFAULT_SETTINGS.openWithTarget, 'tab');
+  assert.equal(normalizeSettings({}).openWithTarget, 'tab');
+  assert.equal(normalizeSettings({ openWithTarget: 'window' }).openWithTarget, 'window');
+  assert.equal(normalizeSettings({ openWithTarget: 'split' }).openWithTarget, 'tab');
+  assert.equal(normalizeSettings({ openWithTarget: 1 }).openWithTarget, 'tab');
 });

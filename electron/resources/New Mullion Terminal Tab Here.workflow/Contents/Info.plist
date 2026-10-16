@@ -5,9 +5,9 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en_US</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.mullion.terminal.quickaction</string>
+	<string>dev.mullion.terminal.quickaction.tab</string>
 	<key>CFBundleName</key>
-	<string>Open in Mullion Terminal</string>
+	<string>New Mullion Terminal Tab Here</string>
 	<key>MullionTerminalQuickAction</key>
 	<true/>
 	<key>NSServices</key>
@@ -16,7 +16,7 @@
 			<key>NSMenuItem</key>
 			<dict>
 				<key>default</key>
-				<string>Open in Mullion Terminal</string>
+				<string>New Mullion Terminal Tab Here</string>
 			</dict>
 			<key>NSMessage</key>
 			<string>runWorkflowAsService</string>

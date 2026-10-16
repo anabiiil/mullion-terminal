@@ -13,6 +13,7 @@ import { editorKind, ESC_DELAY_MS, looksLikeGitEditorBuffer, NANO_KEYS, VIM_KEYS
 import { accumulateWheelLines, arrowKeysForLines } from './wheel-scroll';
 import EditorBar from './EditorBar';
 import CommandText from './CommandText';
+import { DEFAULT_TERMINAL_FONT, fontStack, xtermTheme } from './appearance';
 
 export interface ShellHandle {
   focus(): void; insert(command: string): void;
@@ -20,6 +21,8 @@ export interface ShellHandle {
   // tree double-click opening nano) so it's never learned as something the user "works with".
   run(command: string, options?: { record?: boolean }): boolean;
   clear(): void;
+  // True while a full-screen program (nano, vim, less, ...) owns the alternate screen.
+  isAlternateScreen(): boolean;
 }
 interface SuggestionPopup { items: Suggestion[]; selected: number; line: string; trackerRevision: number }
 interface Props {
@@ -27,11 +30,15 @@ interface Props {
   register(id: string, handle: ShellHandle | null): void;
   onHistory(history: HistoryEntry[]): void;
   onError(error: unknown): void;
+  /** The branch name in a `git:(branch)` prompt segment was clicked; opens the branch-switch menu at this point. */
+  onBranchClick(x: number, y: number): void;
 }
-const themes = {
-  dark: { background: '#161c28', foreground: '#e8ebf2', cursor: '#ff7a5c', cursorAccent: '#161c28', selectionBackground: '#ff7a5c40', black: '#232a38', red: '#f26d6d', green: '#3ecf7a', yellow: '#e5b85c', blue: '#6ea8fe', magenta: '#d68cf0', cyan: '#4fd1c5', white: '#c9cfdb', brightBlack: '#5e6678', brightRed: '#ff8e74', brightGreen: '#6be39b', brightYellow: '#f2cf85', brightBlue: '#93bfff', brightMagenta: '#e5adf7', brightCyan: '#7ee3da', brightWhite: '#ffffff' },
-  light: { background: '#ffffff', foreground: '#1a1f2b', cursor: '#ff6b4a', cursorAccent: '#ffffff', selectionBackground: '#ff6b4a30', black: '#1a1f2b', red: '#d93a3a', green: '#1a9553', yellow: '#a8680f', blue: '#3563d6', magenta: '#a347bf', cyan: '#12808f', white: '#8c94a6', brightBlack: '#6b7385' },
-};
+// Matches a prompt line's git segment (see electron/shell.cjs's gitSegmentScript) once rendered
+// to plain text: `git:(` then the branch/sha (a git ref has no whitespace, so it ends at the
+// first space or `)`), optionally more detail (` → origin/main ↑1 ↓2`), then `)`, then the
+// prompt's own `❯` — that trailing anchor keeps this from ever matching arbitrary command
+// output that happens to print something shaped like `git:(...)`.
+const PROMPT_GIT_LINE = /git:\(([^\s)]+)[^)]*\)\s*❯/;
 export default function ShellPane(props: Props) {
   const container = useRef<HTMLDivElement>(null);
   const current = useRef(props);
@@ -108,17 +115,17 @@ export default function ShellPane(props: Props) {
     setPosition(previous => previous.left === next.left && previous.top === next.top
       && previous.maxHeight === next.maxHeight && previous.placement === next.placement ? previous : next);
     panel.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
-  }, [suggestions, props.settings.fontSize, props.settings.autoComplete, props.active]);
+  }, [suggestions, props.settings.fontSize, props.settings.appearance.fonts, props.settings.autoComplete, props.active]);
 
   useEffect(() => {
     const element = container.current!;
     const api = window.terminalAPI!;
     const id = props.session.id;
     const term = new Terminal({
-      fontFamily: '"SF Mono", "Cascadia Code", "Cascadia Mono", Menlo, Consolas, monospace',
-      fontSize: current.current.settings.fontSize, lineHeight: 1.22,
+      fontFamily: fontStack(current.current.settings.appearance.fonts.terminalFamily, DEFAULT_TERMINAL_FONT),
+      fontSize: current.current.settings.fontSize, lineHeight: current.current.settings.appearance.fonts.lineHeight,
       cursorBlink: true, cursorStyle: 'bar', cursorWidth: 2,
-      scrollback: 10000, theme: themes[current.current.settings.theme],
+      scrollback: 10000, theme: xtermTheme(current.current.settings.appearance, current.current.settings.theme),
       // Option+drag still selects text while nano/vim capture the mouse.
       macOptionIsMeta: true, macOptionClickForcesSelection: true, drawBoldTextInBrightColors: false,
       smoothScrollDuration: 100, allowProposedApi: false,
@@ -179,7 +186,19 @@ export default function ShellPane(props: Props) {
       const value = popup.current;
       if (!value || !validPopup(value)) return false;
       const line = value.line;
-      const command = value.items[selected ?? (current.current.settings.autoComplete ? value.selected : 0)]?.value;
+      const autoComplete = current.current.settings.autoComplete;
+      const item = value.items[selected ?? (autoComplete ? value.selected : 0)];
+      if (!item) return false;
+      let command = item.value;
+      if (!autoComplete) {
+        // OFF mode shows no popup list to confirm a choice against — only the inline ghost is
+        // visible, so Tab may only ever accept exactly what that ghost showed (typed text plus
+        // its remainder), never some other replacement of the typed token, and never when there
+        // is no ghost rendered at all.
+        const ghost = inlineCompletion(line, item, current.current.session.platform);
+        if (!ghost) return false;
+        command = line + ghost;
+      }
       if (!command || command === line) return false;
       hide();
       suppressed.current = true;
@@ -311,12 +330,37 @@ export default function ShellPane(props: Props) {
     });
     const alternate = term.buffer.onBufferChange(() => { revision.current++; tracker.current.reset(); hide(); wheelAccumulated = 0; checkForeground.current(); });
     const scrolled = term.onScroll(() => { revision.current++; hide(); schedule(); });
+    // Makes the branch name in the prompt's `git:(branch)` segment clickable (underline on
+    // hover, pointer cursor — xterm.js's own default link decorations). Only the active
+    // session's terminal is visible/interactive, but `current.current.active` is checked too
+    // so a stray activation on a backgrounded pane is a no-op rather than opening a menu
+    // anchored on a terminal the user isn't looking at.
+    const gitLink = term.registerLinkProvider({
+      provideLinks(bufferLineNumber, callback) {
+        if (!current.current.active) { callback(undefined); return; }
+        const line = term.buffer.active.getLine(bufferLineNumber - 1);
+        const text = line?.translateToString(true) ?? '';
+        const match = PROMPT_GIT_LINE.exec(text);
+        if (!match) { callback(undefined); return; }
+        const branch = match[1];
+        const startX = match.index + 'git:('.length + 1; // 1-based column, right after "git:(".
+        callback([{
+          text: branch,
+          range: { start: { x: startX, y: bufferLineNumber }, end: { x: startX + branch.length, y: bufferLineNumber } },
+          activate(event) {
+            if (!current.current.active) return;
+            current.current.onBranchClick(event.clientX, event.clientY);
+          },
+        }]);
+      },
+    });
     const detach = attachOutput(id, data => term.write(data));
     const observer = new ResizeObserver(() => { if (current.current.active && element.clientWidth) fit.fit(); });
     observer.observe(element);
     current.current.register(id, {
       focus: () => term.focus(),
       clear: () => term.clear(),
+      isAlternateScreen: () => term.buffer.active.type === 'alternate',
       insert: command => {
         if (!current.current.session.ready || !current.current.session.alive
           || !current.current.active || /[\x00-\x1f\x7f-\x9f]/.test(command)) return;
@@ -343,16 +387,27 @@ export default function ShellPane(props: Props) {
     return () => {
       disposed = true; clearTimeout(timer); revision.current++;
       chooseSuggestion.current = () => {}; requestSuggestions.current = () => {}; checkForeground.current = () => {};
-      detach(); observer.disconnect(); input.dispose(); binary.dispose(); parsed.dispose(); resized.dispose(); alternate.dispose(); scrolled.dispose();
+      detach(); observer.disconnect(); input.dispose(); binary.dispose(); parsed.dispose(); resized.dispose(); alternate.dispose(); scrolled.dispose(); gitLink.dispose();
       current.current.register(id, null); term.dispose(); termRef.current = null;
     };
   }, [props.session.id]);
 
+  // Appearance changes apply live to every pane; only the visible one is refit right away (a
+  // background pane refits when it becomes active, and its shell is resized then).
+  const { appearance, theme, fontSize } = props.settings;
   useEffect(() => {
     const term = termRef.current;
-    if (term) { term.options.theme = themes[props.settings.theme]; term.options.fontSize = props.settings.fontSize; }
-    if (props.active) requestAnimationFrame(() => { fitRef.current?.fit(); term?.focus(); });
-  }, [props.active, props.settings.theme, props.settings.fontSize]);
+    if (!term) return;
+    term.options.theme = xtermTheme(appearance, theme);
+    const fontFamily = fontStack(appearance.fonts.terminalFamily, DEFAULT_TERMINAL_FONT);
+    if (term.options.fontFamily !== fontFamily) term.options.fontFamily = fontFamily;
+    if (term.options.fontSize !== fontSize) term.options.fontSize = fontSize;
+    if (term.options.lineHeight !== appearance.fonts.lineHeight) term.options.lineHeight = appearance.fonts.lineHeight;
+    if (props.active) requestAnimationFrame(() => { if (termRef.current === term) fitRef.current?.fit(); });
+  }, [appearance, theme, fontSize]);
+  useEffect(() => {
+    if (props.active) requestAnimationFrame(() => { fitRef.current?.fit(); termRef.current?.focus(); });
+  }, [props.active]);
   useEffect(() => {
     if (!props.session.ready || !props.session.alive) tracker.current.reset();
     if (!props.session.ready || !props.session.alive || !props.settings.showSuggestions || !props.active) {
@@ -394,7 +449,7 @@ export default function ShellPane(props: Props) {
     </div>}
     {foregroundEditor && props.active && props.session.alive && <EditorBar kind={foregroundEditor} platform={props.session.platform}
       // Float just above nano's two shortcut rows, or vim's one command line.
-      bottom={Math.round(props.settings.fontSize * 1.22 * (foregroundEditor === 'vim' ? 1 : 2)) + 18}
+      bottom={Math.round(props.settings.fontSize * props.settings.appearance.fonts.lineHeight * (foregroundEditor === 'vim' ? 1 : 2)) + 18}
       onSave={() => editorKeys(NANO_KEYS.save)}
       onSaveAndExit={() => foregroundEditor === 'vim' ? vimCommand(VIM_KEYS.saveAndExit) : editorKeys(NANO_KEYS.saveAndExit)}
       onExit={() => foregroundEditor === 'vim' ? vimCommand(VIM_KEYS.exit) : editorKeys(NANO_KEYS.exit)} />}

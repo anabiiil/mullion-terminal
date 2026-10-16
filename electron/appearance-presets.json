@@ -1,0 +1,57 @@
+{
+  "mullion-dark": {
+    "name": "Mullion Dark",
+    "theme": "dark",
+    "ui": { "background": "#0e121a", "panel": "#161c28", "text": "#e8ebf2", "muted": "#8c94a6", "accent": "#ff7a5c", "border": "#232a38", "flag": "#2f81f7" },
+    "terminal": {
+      "background": "#161c28", "foreground": "#e8ebf2", "cursor": "#ff7a5c", "selection": "#ff7a5c",
+      "black": "#232a38", "red": "#f26d6d", "green": "#3ecf7a", "yellow": "#e5b85c", "blue": "#6ea8fe", "magenta": "#d68cf0", "cyan": "#4fd1c5", "white": "#c9cfdb",
+      "brightBlack": "#5e6678", "brightRed": "#ff8e74", "brightGreen": "#6be39b", "brightYellow": "#f2cf85", "brightBlue": "#93bfff", "brightMagenta": "#e5adf7", "brightCyan": "#7ee3da", "brightWhite": "#ffffff"
+    },
+    "prompt": { "path": "", "gitLabel": "", "branch": "", "ahead": "", "behind": "", "arrow": "", "flag": "" }
+  },
+  "mullion-light": {
+    "name": "Mullion Light",
+    "theme": "light",
+    "ui": { "background": "#f3f4f7", "panel": "#ffffff", "text": "#1a1f2b", "muted": "#6b7385", "accent": "#ff6b4a", "border": "#e6e8ee", "flag": "#2b5fd9" },
+    "terminal": {
+      "background": "#ffffff", "foreground": "#1a1f2b", "cursor": "#ff6b4a", "selection": "#ff6b4a",
+      "black": "#1a1f2b", "red": "#d93a3a", "green": "#1a9553", "yellow": "#a8680f", "blue": "#3563d6", "magenta": "#a347bf", "cyan": "#12808f", "white": "#8c94a6",
+      "brightBlack": "#6b7385", "brightRed": "#ef2929", "brightGreen": "#8ae234", "brightYellow": "#fce94f", "brightBlue": "#729fcf", "brightMagenta": "#ad7fa8", "brightCyan": "#34e2e2", "brightWhite": "#eeeeec"
+    },
+    "prompt": { "path": "", "gitLabel": "", "branch": "", "ahead": "", "behind": "", "arrow": "", "flag": "" }
+  },
+  "dracula": {
+    "name": "Dracula",
+    "theme": "dark",
+    "ui": { "background": "#21222c", "panel": "#282a36", "text": "#f8f8f2", "muted": "#9ea3c0", "accent": "#ff79c6", "border": "#44475a", "flag": "#bd93f9" },
+    "terminal": {
+      "background": "#282a36", "foreground": "#f8f8f2", "cursor": "#f8f8f2", "selection": "#6272a4",
+      "black": "#21222c", "red": "#ff5555", "green": "#50fa7b", "yellow": "#f1fa8c", "blue": "#bd93f9", "magenta": "#ff79c6", "cyan": "#8be9fd", "white": "#f8f8f2",
+      "brightBlack": "#6272a4", "brightRed": "#ff6e6e", "brightGreen": "#69ff94", "brightYellow": "#ffffa5", "brightBlue": "#d6acff", "brightMagenta": "#ff92df", "brightCyan": "#a4ffff", "brightWhite": "#ffffff"
+    },
+    "prompt": { "path": "", "gitLabel": "", "branch": "", "ahead": "", "behind": "", "arrow": "", "flag": "#bd93f9" }
+  },
+  "one-dark": {
+    "name": "One Dark",
+    "theme": "dark",
+    "ui": { "background": "#21252b", "panel": "#282c34", "text": "#d7dae0", "muted": "#9da5b4", "accent": "#61afef", "border": "#3e4451", "flag": "#c678dd" },
+    "terminal": {
+      "background": "#282c34", "foreground": "#abb2bf", "cursor": "#528bff", "selection": "#528bff",
+      "black": "#282c34", "red": "#e06c75", "green": "#98c379", "yellow": "#e5c07b", "blue": "#61afef", "magenta": "#c678dd", "cyan": "#56b6c2", "white": "#abb2bf",
+      "brightBlack": "#5c6370", "brightRed": "#e06c75", "brightGreen": "#98c379", "brightYellow": "#e5c07b", "brightBlue": "#61afef", "brightMagenta": "#c678dd", "brightCyan": "#56b6c2", "brightWhite": "#ffffff"
+    },
+    "prompt": { "path": "", "gitLabel": "", "branch": "", "ahead": "", "behind": "", "arrow": "", "flag": "#61afef" }
+  },
+  "solarized-light": {
+    "name": "Solarized Light",
+    "theme": "light",
+    "ui": { "background": "#eee8d5", "panel": "#fdf6e3", "text": "#073642", "muted": "#657b83", "accent": "#cb4b16", "border": "#ddd6c1", "flag": "#268bd2" },
+    "terminal": {
+      "background": "#fdf6e3", "foreground": "#657b83", "cursor": "#586e75", "selection": "#93a1a1",
+      "black": "#073642", "red": "#dc322f", "green": "#859900", "yellow": "#b58900", "blue": "#268bd2", "magenta": "#d33682", "cyan": "#2aa198", "white": "#eee8d5",
+      "brightBlack": "#002b36", "brightRed": "#cb4b16", "brightGreen": "#586e75", "brightYellow": "#657b83", "brightBlue": "#839496", "brightMagenta": "#6c71c4", "brightCyan": "#93a1a1", "brightWhite": "#fdf6e3"
+    },
+    "prompt": { "path": "", "gitLabel": "#93a1a1", "branch": "", "ahead": "", "behind": "", "arrow": "", "flag": "#268bd2" }
+  }
+}
